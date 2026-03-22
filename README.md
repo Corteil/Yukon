@@ -65,6 +65,7 @@ drivers/
   ibus.py                   FlySky iBUS receiver library
   ld06.py                   LD06 LiDAR driver
 robot/
+  camera_controls.py        Shared camera constants, helpers, CalibrationMaps
   aruco_detector.py         OpenCV ArUco marker detector
   aruco_navigator.py        Autonomous gate navigator (ArUco + IMU)
   gps_navigator.py          GPS waypoint navigator

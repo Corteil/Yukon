@@ -457,6 +457,27 @@ GPIO 18 (PWM) → LD06 PWM control @ 30 kHz, 40% duty ≈ 10 Hz scan rate.
 
 Robot-specific modules: vision, navigation, and autonomous control.
 
+#### robot/camera_controls.py
+
+Shared constants, helpers, and utilities used by both `camera_monitor.py` and `camera_web.py`.
+
+| Item | Description |
+|------|-------------|
+| `CAPTURE_SIZES` | List of supported resolutions: 640×480, 1280×720, 1456×1088 |
+| `GAINS` | Analogue gain steps: 1×, 2×, 4×, 8×, 16× |
+| `EXP_STEPS` | Exposure time steps in µs (500 – 66000) |
+| `EXP_DEFAULT` | Default exposure index (index 4 = 8000 µs) |
+| `ARUCO_DICTS` | Supported ArUco dictionary names |
+| `IMAGE_DIR` | Snapshot output path (from `robot.ini [output]` or `~/Pictures/HackyRacingRobot`) |
+| `CALIB_FILE` | Default calibration file path (`camera_cal.npz` in repo root) |
+| `sharpness(gray)` | Laplacian variance sharpness score (resolution-independent) |
+| `rotate(frame, degrees)` | `np.rot90` wrapper for 90° increments |
+| `make_cam(w, h)` | Create and start a `Picamera2` instance at the given resolution |
+| `draw_aruco_on_frame(frame, state)` | Draw tag boxes and gate lines onto an RGB numpy frame in-place |
+| `CalibrationMaps(calib_file)` | Loads `camera_cal.npz`; `.available` property; `.get_maps(w, h)` returns lazily-built undistortion maps |
+
+---
+
 #### robot/aruco_detector.py
 
 OpenCV ArUco marker detector.  Detects markers in RGB camera frames, identifies

@@ -25,6 +25,7 @@ HackyRacingRobot/
 │   └── ld06.py              # LDROBOT LD06 LiDAR
 │
 ├── robot/                   # Robot-specific logic
+│   ├── camera_controls.py   # Shared camera constants, helpers, CalibrationMaps
 │   ├── aruco_detector.py    # OpenCV ArUco marker detection
 │   ├── aruco_navigator.py   # State-machine gate navigator
 │   └── gps_navigator.py     # GPS waypoint navigator
@@ -288,6 +289,7 @@ Never use `print()` in daemon or driver code. `print()` is acceptable only in st
 | Add a GNSS driver | Subclass `gnss/base.py:GNSSBase` |
 | Change web dashboard layout | `robot_web.py` (Jinja2 templates inline) |
 | Change mobile dashboard | `robot_mobile.py` |
+| Shared camera constants / helpers | `robot/camera_controls.py` |
 | Protocol between Pi and Yukon | `docs/PROTOCOL.md` + `robot_daemon.py:_YukonLink` + `yukon_firmware_and_software/main.py` |
 | Device wiring / GPIO assignments | `docs/SETUP.md` |
 
