@@ -7,10 +7,10 @@
 Suggested improvements based on codebase analysis, roughly ordered by priority.
 
 ### Code & Architecture
-- [ ] Commit the currently uncommitted changes (README.md, robot.ini, robot_daemon.py, robot_web.py, robot_mobile.py, camera_*.py, gnss/*.py, yukon firmware) — git status shows a large batch of unstaged modifications
-- [ ] Decide whether `camera_cal.npz` should be committed (large binary, 9.1 MB) or added to `.gitignore`
-- [ ] `camera_monitor.py` and `camera_web.py` share a large amount of logic (exposure control, ArUco toggle, resolution switching) — extract shared code into a `robot/camera_controls.py` module to reduce duplication
-- [ ] NTRIP credentials in `robot.ini` are stored in plaintext — add support for reading them from environment variables or a separate `secrets.ini` (already in `.gitignore`) with a fallback
+- [x] Commit the currently uncommitted changes — done (commit `18a273f`)
+- [x] Decide whether `camera_cal.npz` should be committed — added to `.gitignore`
+- [x] NTRIP credentials — env var overrides (`NTRIP_HOST/PORT/MOUNT/USER/PASSWORD`) implemented
+- [x] `camera_monitor.py` and `camera_web.py` share logic — extracted into `robot/camera_controls.py` (constants, sharpness, rotate, make_cam, draw_aruco_on_frame, CalibrationMaps)
 
 ### Testing
 - [ ] Add unit tests for the `gnss/` package — currently has no dedicated test file unlike every other subsystem

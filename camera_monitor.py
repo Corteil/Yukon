@@ -41,6 +41,13 @@ import pygame
 from picamera2 import Picamera2
 
 from robot.aruco_detector import ArucoDetector, ArUcoState, ARUCO_DICT
+from robot.camera_controls import (
+    CAPTURE_SIZES, GAINS, EXP_STEPS, EXP_DEFAULT, ARUCO_DICTS,
+    IMAGE_DIR, CALIB_FILE,
+    sharpness as _sharpness, rotate as _rotate,
+    make_cam as _make_cam, draw_aruco_on_frame as _draw_aruco_on_frame,
+    CalibrationMaps,
+)
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 
@@ -58,33 +65,6 @@ C_CYAN   = ( 60, 200, 220)
 
 COLOUR_MODES = ["Colour", "Greyscale", "False Colour", "Edges", "Focus Peak"]
 
-CAPTURE_SIZES = [
-    (640,  480),
-    (1280, 720),
-    (1456, 1088),   # full native IMX296
-]
-
-GAINS = [1.0, 2.0, 4.0, 8.0, 16.0]
-
-ARUCO_DICTS = [
-    "DICT_4X4_50",
-    "DICT_4X4_100",
-    "DICT_4X4_1000",
-    "DICT_5X5_100",
-    "DICT_6X6_100",
-]
-
-import configparser as _cp
-_cfg_ini   = _cp.ConfigParser(inline_comment_prefixes=('#',))
-_cfg_ini.read(Path(__file__).parent / "robot.ini")
-_images_dir = _cfg_ini.get('output', 'images_dir', fallback='').strip()
-IMAGE_DIR  = Path(_images_dir) if _images_dir else Path.home() / "Pictures" / "HackyRacingRobot"
-CALIB_FILE = Path(__file__).parent / "camera_cal.npz"
-
-# Exposure steps in µs (range 1–66 666)
-EXP_STEPS = [500, 1000, 2000, 4000, 8000, 16000, 33000, 66000]
-EXP_DEFAULT = 4     # index into EXP_STEPS → 8000 µs
-
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 W, H     = 1024, 768
@@ -95,7 +75,7 @@ IMG_H    = H - BAR_H * 2
 IMG_W    = W - PANEL_W  # image area width (810 px)
 
 
-# ── Frame processing ──────────────────────────────────────────────────────────
+# ── Frame processing (local) ──────────────────────────────────────────────────
 
 def _apply_mode(frame_rgb: np.ndarray, mode: str) -> np.ndarray:
     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
@@ -115,20 +95,6 @@ def _apply_mode(frame_rgb: np.ndarray, mode: str) -> np.ndarray:
         base[edges > 0] = (220, 40, 40)
         return base
     return frame_rgb
-
-
-def _sharpness(gray: np.ndarray) -> float:
-    """Laplacian variance — higher = sharper.
-    Downsampled to 640×480 before scoring so the value is
-    resolution-independent and thresholds stay consistent."""
-    small = cv2.resize(gray, (640, 480), interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(small, cv2.CV_64F).var())
-
-
-def _rotate(frame: np.ndarray, degrees: int) -> np.ndarray:
-    if degrees == 0:
-        return frame
-    return np.rot90(frame, k=-(degrees // 90))
 
 
 def _letterbox(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
@@ -154,39 +120,6 @@ def _draw_histogram(surf, frame_rgb: np.ndarray, rect: pygame.Rect):
                                  (rect.x + i * bar_w,
                                   rect.bottom - bh - 1,
                                   bar_w, bh))
-
-
-# ── ArUco overlay ─────────────────────────────────────────────────────────────
-
-_ACO_GREEN = (  0, 220,  80)
-_ACO_RED   = (220,  40,  40)
-_ACO_BLUE  = ( 40, 120, 220)
-_ACO_WHITE = (230, 230, 240)
-
-
-def _draw_aruco_on_frame(frame: np.ndarray, state: ArUcoState):
-    """Draw tag boxes and gate lines onto an RGB numpy frame."""
-    font      = cv2.FONT_HERSHEY_SIMPLEX
-    for tag in state.tags.values():
-        tl, tr = tag.top_left,     tag.top_right
-        br, bl = tag.bottom_right, tag.bottom_left
-        cv2.line(frame, tl, tr, _ACO_GREEN, 2)
-        cv2.line(frame, tr, br, _ACO_GREEN, 2)
-        cv2.line(frame, br, bl, _ACO_GREEN, 2)
-        cv2.line(frame, bl, tl, _ACO_GREEN, 2)
-        cv2.circle(frame, (tag.center_x, tag.center_y), 4, _ACO_RED, -1)
-        cv2.putText(frame, str(tag.id),
-                    (tl[0], tl[1] - 10), font, 0.55, _ACO_WHITE, 2)
-
-    for gate in state.gates.values():
-        colour = _ACO_BLUE if gate.correct_dir else _ACO_RED
-        cv2.line(frame,
-                 (gate.centre_x, gate.centre_y - 50),
-                 (gate.centre_x, gate.centre_y),
-                 colour, 4)
-        cv2.putText(frame, f"G{gate.gate_id}",
-                    (gate.centre_x + 6, gate.centre_y - 52),
-                    font, 0.55, colour, 2)
 
 
 _SCROLL_STEP = 18   # pixels per arrow-key press when frozen
@@ -296,18 +229,6 @@ def _draw_right_panel(surf, rect: pygame.Rect,
     surf.set_clip(old_clip)
 
 
-# ── Camera helpers ────────────────────────────────────────────────────────────
-
-def _make_cam(width: int, height: int) -> Picamera2:
-    cam = Picamera2()
-    cam.configure(cam.create_video_configuration(
-        main={"size": (width, height), "format": "RGB888"},
-        controls={"FrameRate": 30},
-    ))
-    cam.start()
-    return cam
-
-
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def run():
@@ -336,32 +257,8 @@ def run():
     capture_flash = 0.0   # timestamp of last save (for on-screen flash)
 
     # ── Calibration (optional undistortion) ───────────────────────────────
-    _cal_map1 = _cal_map2 = _cal_size = None
+    _calib    = CalibrationMaps(CALIB_FILE)
     use_calib = False
-    if CALIB_FILE.exists():
-        try:
-            _cal = np.load(CALIB_FILE)
-            _cam_mtx  = _cal['camera_matrix']
-            _dist     = _cal['dist_coeffs']
-            _cal_size = tuple(int(v) for v in _cal['frame_size'])
-        except Exception as e:
-            print(f"Warning: could not load calibration: {e}")
-
-    def _get_cal_maps(w, h):
-        """Return (map1, map2) for the given frame size, building lazily."""
-        nonlocal _cal_map1, _cal_map2, _cal_size
-        if _cam_mtx is None:
-            return None, None
-        if (_cal_map1 is None or (_cal_map1.shape[1], _cal_map1.shape[0]) != (w, h)):
-            cal_w, cal_h = _cal_size
-            sx, sy = w / cal_w, h / cal_h
-            mtx = _cam_mtx.copy()
-            mtx[0, 0] *= sx; mtx[1, 1] *= sy
-            mtx[0, 2] *= sx; mtx[1, 2] *= sy
-            new_mtx, _ = cv2.getOptimalNewCameraMatrix(mtx, _dist, (w, h), 1, (w, h))
-            _cal_map1, _cal_map2 = cv2.initUndistortRectifyMap(
-                mtx, _dist, None, new_mtx, (w, h), cv2.CV_16SC2)
-        return _cal_map1, _cal_map2
 
     detector   = ArucoDetector(ARUCO_DICTS[dict_idx], draw=False)
     aruco_state: ArUcoState = ArUcoState()
@@ -444,7 +341,7 @@ def run():
                     if not frozen:
                         tag_scroll = 0
                 elif ev.key == pygame.K_k:
-                    if _cam_mtx is not None:
+                    if _calib.available:
                         use_calib = not use_calib
                     else:
                         print("No calibration file found — run calibrate_camera.py first")
@@ -472,7 +369,7 @@ def run():
             rotated = _rotate(raw, rotation)
             if use_calib:
                 h, w = rotated.shape[:2]
-                m1, m2 = _get_cal_maps(w, h)
+                m1, m2 = _calib.get_maps(w, h)
                 if m1 is not None:
                     rotated = cv2.remap(rotated, m1, m2, cv2.INTER_LINEAR)
             gray      = cv2.cvtColor(rotated, cv2.COLOR_RGB2GRAY)
@@ -564,7 +461,7 @@ def run():
                      + (f"  {len(aruco_state.gates)} gates" if aruco_state.gates else "")
                      if show_aruco else "OFF")
 
-        calib_str = ("ON" if use_calib else "OFF") if _cam_mtx is not None else "none"
+        calib_str = ("ON" if use_calib else "OFF") if _calib.available else "none"
         stats = [
             ("Mode",      COLOUR_MODES[mode_idx]),
             ("Size",      f"{cap_w}×{cap_h}"),
