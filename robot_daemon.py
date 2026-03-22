@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-robot.py — Unified robot model for Yukon differential-drive robot.
+robot.py — Unified robot model for HackyRacingRobot differential-drive robot.
 
 Subsystems
 ----------
@@ -1594,7 +1594,7 @@ def main():
 
     DEFAULT_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "robot.ini")
 
-    parser = argparse.ArgumentParser(description="Yukon robot",
+    parser = argparse.ArgumentParser(description="HackyRacingRobot",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config",          default=DEFAULT_CFG, help="Config file (default: robot.ini)")
     # Overrides — all optional; config file values are used when not supplied

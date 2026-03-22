@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gps_route_builder_web.py — Web-based GPS route builder for the Yukon robot.
+gps_route_builder_web.py — Web-based GPS route builder for HackyRacingRobot.
 
 Serves a browser-based map editor on port 5003.  Works on desktop and mobile.
 All map interaction uses Leaflet.js with OSM tiles — no extra Python deps.
@@ -331,7 +331,7 @@ _HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Yukon GPS Route Builder</title>
+<title>HackyRacingRobot GPS Route Builder</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
@@ -506,7 +506,7 @@ body{display:flex;flex-direction:column}
 <body>
 
 <div id="header">
-  <h1>⬡ YUKON ROUTE BUILDER</h1>
+  <h1>⬡ HACKYRACINGROBOT ROUTE BUILDER</h1>
   <span id="header-info"></span>
   <span id="conn-badge" class="live-badge">⚫ offline</span>
 </div>
@@ -1041,7 +1041,7 @@ def _local_ip():
 def main():
     global _robot
 
-    parser = argparse.ArgumentParser(description="Yukon GPS route builder (web)")
+    parser = argparse.ArgumentParser(description="HackyRacingRobot GPS route builder (web)")
     parser.add_argument('--host',       default='0.0.0.0')
     parser.add_argument('--port',       default=5003, type=int)
     parser.add_argument('--waypoints',  default=None, help='Load waypoints JSON on start')

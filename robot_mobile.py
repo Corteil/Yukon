@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-robot_mobile.py — Mobile-optimised web dashboard for the Yukon robot.
+robot_mobile.py — Mobile-optimised web dashboard for HackyRacingRobot.
 
 Same Robot backend as robot_web.py; touch-friendly tab UI designed for phones.
 
@@ -258,7 +258,7 @@ _HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Yukon</title>
+<title>HackyRacingRobot</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -531,7 +531,7 @@ html, body {
 
 <!-- Header -->
 <div id="header">
-  <span id="h-title">&#x1F916; YUKON</span>
+  <span id="h-title">&#x1F916; HACKYRACINGROBOT</span>
   <span id="h-mode">--</span>
   <span id="h-speed"></span>
   <span id="h-conn">&#x26AB; …</span>
@@ -1308,7 +1308,7 @@ def main():
 
     DEFAULT_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini')
 
-    parser = argparse.ArgumentParser(description='Yukon mobile web dashboard')
+    parser = argparse.ArgumentParser(description='HackyRacingRobot mobile web dashboard')
     parser.add_argument('--config',          default=DEFAULT_CFG)
     parser.add_argument('--host',            default=None)
     parser.add_argument('--port',            default=None, type=int)

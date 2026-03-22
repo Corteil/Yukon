@@ -1,4 +1,4 @@
-# Yukon Tools & Tests
+# HackyRacingRobot Tools & Tests
 
 Helper scripts, calibration tools, simulators, and host-side tests.
 All scripts run on the Raspberry Pi host unless noted otherwise.

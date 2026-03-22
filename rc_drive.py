@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-rc_drive.py — FlySky iBUS RC control for Yukon.
+rc_drive.py — FlySky iBUS RC control for HackyRacingRobot.
 
 Reads iBUS channels from /dev/ttyAMA3 (GPIO 9, uart3-pi5 overlay),
 applies throttle/aileron tank-mix, and sends CMD_LEFT / CMD_RIGHT
@@ -251,7 +251,7 @@ def _find_yukon_port():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="iBUS RC drive for Yukon")
+    parser = argparse.ArgumentParser(description="iBUS RC drive for HackyRacingRobot")
     parser.add_argument("--port",          help="Yukon USB serial port (auto-detected if omitted)")
     parser.add_argument("--ibus-port",     default="/dev/ttyAMA3",
                         help="iBUS UART device (default: /dev/ttyAMA3)")

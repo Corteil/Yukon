@@ -1,4 +1,4 @@
-# Yukon Robot — Python dependencies
+# HackyRacingRobot — Python dependencies
 # Install with: pip install -r requirements.txt
 #
 # Note: picamera2 is Raspberry Pi specific and must be installed via apt:

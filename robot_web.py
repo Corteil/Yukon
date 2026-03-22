@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-robot_web.py — Flask web dashboard for the Yukon robot.
+robot_web.py — Flask web dashboard for HackyRacingRobot.
 
 Mirrors robot_gui.py features:
   · Real-time telemetry via Server-Sent Events (10 Hz)
@@ -175,7 +175,7 @@ _HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Yukon Robot Monitor</title>
+<title>HackyRacingRobot Monitor</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -286,7 +286,7 @@ button:active{background:#2a2a42}
 
 <!-- Title bar -->
 <div class="panel" id="titlebar">
-  <span id="main-title">Yukon Robot Monitor</span>
+  <span id="main-title">HackyRacingRobot Monitor</span>
   <div class="info">
     <span>Speed:&nbsp;<b id="speed-lbl" style="color:var(--cyan)">--</b></span>
     <span>Mode:&nbsp;<b id="mode-lbl">--</b></span>
@@ -1010,7 +1010,7 @@ def main():
 
     DEFAULT_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini')
 
-    parser = argparse.ArgumentParser(description='Yukon robot web dashboard')
+    parser = argparse.ArgumentParser(description='HackyRacingRobot web dashboard')
     parser.add_argument('--config',          default=DEFAULT_CFG)
     parser.add_argument('--host',            default=None)
     parser.add_argument('--port',            default=None, type=int)

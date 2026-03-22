@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-robot_gui.py — Pygame status display for the Yukon robot.
+robot_gui.py — Pygame status display for HackyRacingRobot.
 
 Panels
 ------
@@ -609,7 +609,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
     pygame.init()
     W, H = 1024, 768
     screen = pygame.display.set_mode((W, H))
-    pygame.display.set_caption("Yukon Robot Monitor")
+    pygame.display.set_caption("HackyRacingRobot Monitor")
     clock = pygame.time.Clock()
 
     FONT_BIG  = pygame.font.SysFont("monospace", 28, bold=True)
@@ -712,7 +712,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
         title_rect = pygame.Rect(10, 8, W - 20, TITLE_H - 8)
         pygame.draw.rect(screen, C_PANEL,      title_rect, border_radius=6)
         pygame.draw.rect(screen, mode_color,   title_rect, width=2, border_radius=6)
-        screen.blit(FONT_BIG.render("Yukon Robot Monitor", True, C_WHITE), (22, 14))
+        screen.blit(FONT_BIG.render("HackyRacingRobot Monitor", True, C_WHITE), (22, 14))
 
         sc = state.speed_scale
         if sc < 0.45:   spd_label, spd_color = "Slow",   C_CYAN
@@ -860,7 +860,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
 def main():
     DEFAULT_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "robot.ini")
 
-    parser = argparse.ArgumentParser(description="Yukon robot pygame GUI")
+    parser = argparse.ArgumentParser(description="HackyRacingRobot pygame GUI")
     parser.add_argument("--config",          default=DEFAULT_CFG)
     parser.add_argument("--fps",             default=None, type=int)
     parser.add_argument("--yukon-port",      default=None)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gps_route_builder.py — GPS route builder for the Yukon robot.
+gps_route_builder.py — GPS route builder for HackyRacingRobot.
 
 Build, edit and export GPS waypoint routes using an interactive map.
 
@@ -67,7 +67,7 @@ W, H        = 1280, 780
 TILE_SIZE   = 256
 TILE_CACHE  = Path.home() / ".cache" / "yukon_map_tiles"
 OSM_URL     = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-USER_AGENT  = "YukonRouteBuilder/1.0 (robot project)"
+USER_AGENT  = "HackyRacingRobotRouteBuilder/1.0 (robot project)"
 MAX_ZOOM    = 19
 MIN_ZOOM    = 2
 DEFAULT_ZOOM= 17
@@ -654,14 +654,14 @@ class Toast:
 # ── Main app ──────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Yukon GPS route builder")
+    parser = argparse.ArgumentParser(description="HackyRacingRobot GPS route builder")
     parser.add_argument("--waypoints", default=None, help="Load waypoints JSON on start")
     parser.add_argument("--live",      action="store_true", help="Connect to robot.py on start")
     args = parser.parse_args()
 
     pygame.init()
     screen = pygame.display.set_mode((W, H))
-    pygame.display.set_caption("Yukon GPS Route Builder")
+    pygame.display.set_caption("HackyRacingRobot GPS Route Builder")
     clock  = pygame.time.Clock()
 
     font_big  = pygame.font.SysFont("monospace", 22, bold=True)

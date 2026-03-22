@@ -1,4 +1,4 @@
-# Yukon Robot Controller
+# HackyRacingRobot
 
 Raspberry Pi–hosted controller for a Pimoroni Yukon robot. A Pi reads an RC transmitter via iBUS and sends motor commands to the Yukon over USB serial using a compact 5-byte protocol.
 
