@@ -18,18 +18,18 @@ Suggested improvements based on codebase analysis, roughly ordered by priority.
 - [x] Add `--dry-run` flag to `tools/test_gps.py` — runs 20 NMEA parsing tests without hardware or GUI
 
 ### Navigation & Autonomy
-- [ ] LiDAR data (`LidarScan`) is collected but not used by either navigator — add basic obstacle-stop logic to `aruco_navigator.py` and `gps_navigator.py` (halt if any point inside a configurable forward cone is closer than N metres)
-- [ ] `gps_navigator.py` drives straight between waypoints — add a simple look-ahead / smoothing step to reduce oscillation on longer straights
-- [ ] The ArUco gate navigator has no recovery behaviour when it loses sight of the target gate — add a slow rotation search state
+- [x] LiDAR data (`LidarScan`) is collected but not used by either navigator — add basic obstacle-stop logic to `aruco_navigator.py` and `gps_navigator.py` (halt if any point inside a configurable forward cone is closer than N metres)
+- [x] `gps_navigator.py` drives straight between waypoints — add a simple look-ahead / smoothing step to reduce oscillation on longer straights
+- [x] The ArUco gate navigator has no recovery behaviour when it loses sight of the target gate — add a slow rotation search state
 
 ### Documentation
-- [ ] `docs/ARCHITECTURE.md` and `docs/SETUP.md` may be out of date following the rename from Yukon to HackyRacingRobot — review and update device paths, file names, and wiring notes
-- [ ] Add a `docs/CALIBRATION.md` walk-through covering the full camera calibration → ArUco detection pipeline
+- [x] `docs/ARCHITECTURE.md` and `docs/SETUP.md` may be out of date following the rename from Yukon to HackyRacingRobot — review and update device paths, file names, and wiring notes
+- [x] Add a `docs/CALIBRATION.md` walk-through covering the full camera calibration → ArUco detection pipeline
 
 ### Minor / Quality-of-Life
-- [ ] Video recordings have no maximum duration or size cap — long runs could fill the SD card; add a rolling max-minutes config option to `[output]`
-- [ ] `robot_web.py` and `robot_mobile.py` both start their own `Robot` instance; if both are launched together they fight over serial ports — document clearly that only one frontend should run at a time, or add a shared-daemon IPC layer
-- [ ] `tools/gps_route_builder.py` saves routes as plain JSON with no schema version field — add a `"version": 1` key now before the format evolves
+- [x] Video recordings have no maximum duration or size cap — long runs could fill the SD card; add a rolling max-minutes config option to `[output]`
+- [x] `robot_web.py` and `robot_mobile.py` both start their own `Robot` instance; if both are launched together they fight over serial ports — document clearly that only one frontend should run at a time, or add a shared-daemon IPC layer
+- [x] `tools/gps_route_builder.py` saves routes as plain JSON with no schema version field — add a `"version": 1` key now before the format evolves
 
 ---
 

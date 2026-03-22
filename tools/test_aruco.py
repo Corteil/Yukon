@@ -10,9 +10,9 @@ Tests:
   5. Live camera detection                 (--live, requires camera)
 
 Usage:
-    python3 tests/test_aruco.py              # unit tests only
-    python3 tests/test_aruco.py --live       # unit tests + live camera view
-    python3 tests/test_aruco.py --live --camera 0
+    python3 tools/test_aruco.py              # unit tests only
+    python3 tools/test_aruco.py --live       # unit tests + live camera view
+    python3 tools/test_aruco.py --live --camera 0
 """
 
 import sys

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-robot.py — Unified robot model for HackyRacingRobot differential-drive robot.
+robot_daemon.py — Central Robot class for HackyRacingRobot differential-drive robot.
 
 Subsystems
 ----------
-  Drive    : Yukon USB serial (CMD_LEFT / CMD_RIGHT / CMD_KILL / CMD_SENSOR)
-  RC       : FlySky iBUS manual control + mode switch
-  Telemetry: Yukon voltage, current, temps, faults  (1 Hz)
-  Camera   : picamera2 (Pi camera) or OpenCV fallback
-  Lidar    : RPLidar via rplidar library
-  GPS      : gpsd or raw NMEA serial fallback
+  Drive    : Yukon RP2040 USB serial (CMD_LEFT / CMD_RIGHT / CMD_KILL / CMD_SENSOR)
+  RC       : FlySky iBUS manual control + mode/speed-limit switches
+  Telemetry: Yukon voltage, current, temps, faults, IMU heading  (1 Hz)
+  Camera   : picamera2 (IMX296) or OpenCV fallback; optional ArUco detection
+  LiDAR    : LDROBOT LD06 via drivers/ld06.py
+  GPS      : Allystar TAU1308 RTK via gnss/ package; optional NTRIP/RTCM corrections
 
-Mode switching (RC channel 6, SwB)
------------------------------------
-  CH6 ≤ 1500  →  MANUAL  (RC tank-mix drives motors directly at 50 Hz)
-  CH6 > 1500  →  AUTO    (call robot.drive(left, right) from your code)
+Mode switching (RC channel 5, SwA — configurable via [rc] mode_ch)
+-------------------------------------------------------------------
+  CH5 ≤ 1500  →  MANUAL  (RC tank-mix drives motors directly at 50 Hz)
+  CH5 > 1500  →  AUTO    (call robot.drive(left, right) from your navigator)
   Fault/ESTOP →  ESTOP   (motors killed; call robot.reset_estop() to recover)
 
 Quick start
@@ -29,8 +29,8 @@ Quick start
 
 Command-line demo
 -----------------
-  python3 robot.py               # print state at 2 Hz until Ctrl+C
-  python3 robot.py --no-camera --no-lidar --no-gps
+  python3 robot_daemon.py               # print state at 2 Hz until Ctrl+C
+  python3 robot_daemon.py --no-camera --no-lidar --no-gps
 """
 
 import configparser
@@ -509,7 +509,9 @@ class _Camera:
                  enable_aruco: bool = False,
                  aruco_dict:   str  = "DICT_4X4_1000",
                  calib_file:   str  = None,
-                 tag_size:     float = 0.15):
+                 tag_size:     float = 0.15,
+                 max_rec_minutes: float = 0.0,
+                 rec_dir:      str  = ''):
         self._w             = width
         self._h             = height
         self._fps           = fps
@@ -527,6 +529,9 @@ class _Camera:
         self._writer       = None   # cv2.VideoWriter or None
         self._rec_lock     = threading.Lock()
         self._rec_path     = ""
+        self._rec_start    = 0.0
+        self._max_rec_s    = max_rec_minutes * 60.0 if max_rec_minutes > 0 else 0.0
+        self._rec_dir      = rec_dir
 
     def start(self):
         threading.Thread(target=self._run, daemon=True, name="camera").start()
@@ -712,8 +717,9 @@ class _Camera:
                 writer.release()
                 log.warning(f"VideoWriter failed to open: {path}")
                 return False
-            self._writer   = writer
-            self._rec_path = path
+            self._writer    = writer
+            self._rec_path  = path
+            self._rec_start = time.monotonic()
             log.info(f"Camera recording started → {path}")
             return True
 
@@ -738,6 +744,26 @@ class _Camera:
             if self._writer is None:
                 return
             import cv2
+            # Roll to a new file when max recording duration is exceeded
+            if (self._max_rec_s > 0 and
+                    time.monotonic() - self._rec_start >= self._max_rec_s):
+                self._writer.release()
+                log.info(f"Camera recording segment complete → {self._rec_path}")
+                ts_str   = time.strftime("%Y%m%d_%H%M%S")
+                new_path = os.path.join(self._rec_dir, f"recording_{ts_str}.mp4")
+                os.makedirs(self._rec_dir, exist_ok=True)
+                w, h = (self._h, self._w) if self._rotation in (90, 270) else (self._w, self._h)
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(new_path, fourcc, self._fps, (w, h))
+                if not writer.isOpened():
+                    writer.release()
+                    self._writer = None
+                    log.warning(f"VideoWriter failed to open new segment: {new_path}")
+                    return
+                self._writer    = writer
+                self._rec_path  = new_path
+                self._rec_start = time.monotonic()
+                log.info(f"Camera recording new segment → {new_path}")
             bgr = frame[:, :, ::-1].copy()  # RGB → BGR, copy so we don't mutate the live frame
             ts  = time.strftime("%d-%m-%y  %H:%M:%S")
             # Shadow then white text for readability on any background
@@ -1253,7 +1279,8 @@ class Robot:
         gps_bookmark_ch: int   = 2,
         gps_log_dir:     str   = '',
         gps_log_hz:      float = 5.0,
-        rec_dir:         str   = '',   # video recordings; blank = ~/Videos/HackyRacingRobot
+        rec_dir:              str   = '',   # video recordings; blank = ~/Videos/HackyRacingRobot
+        max_recording_minutes: float = 0.0, # 0 = unlimited; >0 rolls to new file each N minutes
         data_log_dir:    str   = '',   # ML data logs;     blank = ~/Documents/HackyRacingRobot
         deadzone:       int   = 30,
         failsafe_s:     float = 0.5,
@@ -1293,6 +1320,7 @@ class Robot:
                                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'))
         self._rec_dir       = (rec_dir.strip() or
                                os.path.join(os.path.expanduser('~'), 'Videos', 'HackyRacingRobot'))
+        self._max_rec_minutes = max_recording_minutes
         self._data_log_dir  = (data_log_dir.strip() or
                                os.path.join(os.path.expanduser('~'), 'Documents', 'HackyRacingRobot'))
         self._gps_log_interval = 1.0 / max(gps_log_hz, 0.1)
@@ -1356,14 +1384,16 @@ class Robot:
 
         if self._enable['camera']:
             self._camera = _Camera(
-                width        = self._cam_width,
-                height       = self._cam_height,
-                fps          = self._cam_fps,
-                rotation     = self._cam_rotation,
-                enable_aruco = self._enable_aruco,
-                aruco_dict   = self._aruco_dict,
-                calib_file   = self._aruco_calib,
-                tag_size     = self._aruco_tag_size,
+                width             = self._cam_width,
+                height            = self._cam_height,
+                fps               = self._cam_fps,
+                rotation          = self._cam_rotation,
+                enable_aruco      = self._enable_aruco,
+                aruco_dict        = self._aruco_dict,
+                calib_file        = self._aruco_calib,
+                tag_size          = self._aruco_tag_size,
+                max_rec_minutes   = self._max_rec_minutes,
+                rec_dir           = self._rec_dir,
             )
             self._camera.start()
 
@@ -1590,6 +1620,7 @@ class Robot:
 
     def _rc_thread(self):
         """Read iBUS packets and update RC state."""
+        import serial as _serial
         from drivers.ibus import IBusReader, IBusError
         while not self._stop_evt.is_set():
             try:
@@ -1604,7 +1635,7 @@ class Robot:
                         else:
                             age = time.monotonic() - self._rc_ts
                             self._rc_active = age < self._failsafe_s
-            except IBusError as e:
+            except (IBusError, _serial.SerialException, OSError) as e:
                 log.warning(f"iBUS error: {e} — retrying in 2 s")
                 time.sleep(2.0)
 
@@ -2136,14 +2167,17 @@ def main():
         speed_ch       = _cfg(cfg, "rc", "speed_ch",       6,    int),
         auto_type_ch   = _cfg(cfg, "rc", "auto_type_ch",   7,    int),
         gps_log_ch      = _cfg(cfg, "rc", "gps_log_ch",      8,   int),
-        gps_bookmark_ch = _cfg(cfg, "rc", "gps_bookmark_ch", 2,   int),
+        gps_bookmark_ch = _cfg(cfg, "rc", "gps_bookmark_ch", 10,  int),
         gps_log_dir     = _cfg(cfg, "gps", "log_dir",        ""),
         gps_log_hz      = _cfg(cfg, "gps", "log_hz",         5.0, float),
         deadzone       = _cfg(cfg, "rc", "deadzone",       30,   int),
         failsafe_s     = _cfg(cfg, "rc", "failsafe_s",     0.5,  float),
         speed_min      = _cfg(cfg, "rc", "speed_min",      0.25, float),
         control_hz     = _cfg(cfg, "rc", "control_hz",     50,   int),
-        no_motors      = args.no_motors,
+        no_motors             = args.no_motors,
+        rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),
+        max_recording_minutes = _cfg(cfg, 'output', 'max_recording_minutes', 0.0, float),
+        data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
     )
     robot.start()
 

@@ -90,23 +90,33 @@ picamera2 `RGB888` format returns BGR bytes in memory. `robot_daemon.py` and `ca
 
 The camera is an IMX296 global shutter module with a 2.1 mm lens (~100° FOV). Calibration corrects barrel/radial distortion.
 
+See [`docs/CALIBRATION.md`](CALIBRATION.md) for the full walk-through. Quick summary:
+
 1. Print a calibration target:
    ```bash
    python3 tools/make_checkerboard_pdf.py   # → docs/checkerboard_9x6.pdf
    ```
-2. Run the calibration tool:
+2. Run the calibration tool at the **maximum sensor resolution** (1456×1088):
    ```bash
    python3 tools/calibrate_camera.py
    ```
-   - Press `M` to mirror the display (useful when holding the board yourself).
-   - Press `A` to toggle auto-capture (default: on — holds still for 1.2 s then captures).
-   - Cover all 9 zones shown on screen (corners, edges, centre) from various angles.
-   - Press `C` to compute calibration once you have ≥ 6 captures (more = better, aim for 20+).
-   - Press `Q` or `Esc` to quit — calibration is saved automatically if computed.
-   - Output: `camera_cal.npz` in the repo root.
-3. Once `camera_cal.npz` exists, `camera_monitor.py` and `camera_web.py` show a **Calib** toggle (key `K`) to enable lens undistortion.
+   - Cover all 9 zones, aim for 20+ captures. Press `C` to compute, `Q` to quit and save.
+   - Output: `camera_cal_1456x1088.npz` in the repo root.
+3. Derive per-resolution files for the resolution you run the camera at:
+   ```bash
+   python3 tools/derive_calibrations.py camera_cal_1456x1088.npz 640x480
+   ```
+4. Set `calib_file` in `robot.ini` `[aruco]` to the derived file, e.g. `camera_cal_640x480.npz`.
+5. Once the file exists, `camera_monitor.py` and `camera_web.py` show a **Calib** toggle (key `K`) to enable lens undistortion in live view.
 
-> **Important:** Calibrate at the same resolution the camera runs at (default **640×480** in `robot.ini`). The maps are resolution-specific — a calibration at 1456×1088 will not apply to a 640×480 stream and undistortion will be silently skipped.
+---
+
+## Running frontends
+
+> **Run only ONE frontend at a time.**
+> `robot_gui.py`, `robot_web.py`, and `robot_mobile.py` each create their own `Robot` instance and claim the same hardware ports (Yukon USB serial, iBUS UART, LiDAR UART, GPS USB serial). Launching two simultaneously causes port-already-open errors and undefined behaviour.
+
+If you need both a GUI and a web interface consider running `robot_daemon.py` headlessly and accessing it via the web dashboard only.
 
 ---
 
@@ -116,6 +126,8 @@ The camera is an IMX296 global shutter module with a 2.1 mm lens (~100° FOV). C
 |--------|------|-------------|
 | `robot_web.py` | 5000 | Desktop robot dashboard |
 | `robot_mobile.py` | 5001 | Mobile robot dashboard (tabs: Drive, Telem, GPS, System) |
+| `tools/yukon_sim_web.py` | 5002 | Yukon hardware simulator web UI (offline testing, fault injection) |
+| `tools/read_data_log.py` | 5004 | JSONL data-log viewer (Drive, Telemetry, GPS map, LiDAR, Inspector) |
 | `camera_web.py` | 8080 | Mobile camera interface (MJPEG stream, ArUco, capture) |
 
 Access from any browser on the same network: `http://<pi-ip>:<port>/`

@@ -1209,8 +1209,9 @@ def main():
         speed_min      = _cfg(cfg, 'rc',      'speed_min',     0.25, float),
         control_hz     = _cfg(cfg, 'rc',      'control_hz',    50,   int),
         no_motors      = args.no_motors,
-        rec_dir        = _cfg(cfg, 'output', 'videos_dir',   ''),
-        data_log_dir   = _cfg(cfg, 'output', 'data_log_dir', ''),
+        rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),
+        max_recording_minutes = _cfg(cfg, 'output', 'max_recording_minutes', 0.0, float),
+        data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
     )
     _robot.start()
     log.info(f'Web dashboard → http://{_local_ip()}:{web_port}/')

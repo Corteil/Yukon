@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_leds.py — LED strip tests for the Yukon NeoPixel module (SLOT1).
+test_leds.py — LED strip tests for the Yukon NeoPixel module (SLOT3).
 
 Tests all colour presets, individual pixel control, set_pixels(), and all
 built-in patterns.  With --dry-run, only protocol encoding is tested — no

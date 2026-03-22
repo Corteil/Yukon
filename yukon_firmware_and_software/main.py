@@ -4,7 +4,7 @@ import sys
 import select
 import random
 
-from pimoroni_yukon import Yukon, SLOT1, SLOT2, SLOT5
+from pimoroni_yukon import Yukon, SLOT2, SLOT3, SLOT5
 from pimoroni_yukon.modules import DualMotorModule, LEDStripModule
 from pimoroni_yukon.timing import ticks_ms, ticks_add
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
@@ -301,7 +301,7 @@ except Exception as e:
     print("IMU not available:", e)
 
 try:
-    yukon.register_with_slot(module1, SLOT1)
+    yukon.register_with_slot(module1, SLOT3)
     yukon.register_with_slot(module2, SLOT2)
     yukon.register_with_slot(module5, SLOT5)
     yukon.verify_and_initialise()

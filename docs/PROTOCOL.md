@@ -35,7 +35,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
 | `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |
 | `CMD_PIXEL_SHOW` | 9    | Ignored — pushes all staged pixel data to strip hardware |
-| `CMD_PATTERN`    | 10   | High nibble = colour index (0=keep current), low nibble = pattern (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge) |
+| `CMD_PATTERN`    | 10   | High nibble = colour index (0=keep current), low nibble = pattern (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge 6=estop_flash) |
 
 ---
 
@@ -104,7 +104,7 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 
 ---
 
-## LED strip (NeoPixel module, SLOT1)
+## LED strip (NeoPixel module, SLOT3)
 
 ### Colour palette
 
@@ -149,7 +149,8 @@ Starts a built-in animation running autonomously on the Yukon. The high nibble o
 | random  | 2     | Each LED randomly picks a palette colour or off (~200 ms/step) |
 | rainbow | 3     | Full spectrum across all LEDs, rotating hue (~40 ms/step) |
 | retro_computer | 4 | Single-colour random on/off — default white (~200 ms/step) |
-| converge | 5   | LEDs fill in from both ends to centre and back (~80 ms/step) |
+| converge      | 5     | LEDs fill in from both ends to centre and back (~80 ms/step) |
+| estop_flash   | 6     | All LEDs flash red at ~4 Hz — used for ESTOP mode |
 
 Example — start rainbow:
 ```

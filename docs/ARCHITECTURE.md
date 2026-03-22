@@ -49,17 +49,23 @@ Consumers of robot state:
 | `drivers/ibus.py` | FlySky iBUS reader library (32-byte packets, 14 channels) |
 | `drivers/ld06.py` | LD06 LiDAR driver (47-byte packets, CRC8, `LidarScan` dataclass) |
 | `robot/aruco_detector.py` | OpenCV ArUco wrapper (corners, ID, distance, bearing) |
-| `robot/aruco_navigator.py` | Autonomous gate navigator — state machine (SEARCHING → ALIGNING → APPROACHING → PASSING) with IMU heading hold |
+| `robot/camera_controls.py` | Shared camera constants, helpers, and `CalibrationMaps` class used by `camera_monitor.py` and `camera_web.py` |
+| `robot/aruco_navigator.py` | Autonomous gate navigator — state machine (SEARCHING → ALIGNING → APPROACHING → PASSING → COMPLETE, RECOVERING on gate loss) with IMU heading hold |
 | `robot/gps_navigator.py` | GPS waypoint navigator |
 | `gnss/` | GNSS driver package (TAU1308, UBlox7, UBloxM8P, NTRIP client) |
 | `robot.ini` | Runtime configuration for all subsystems |
 | `tools/upload.py` | MicroPython uploader (handles Yukon double-USB-reset) |
-| `tools/yukon_sim.py` | PTY-based Yukon serial simulator for offline testing |
+| `tools/yukon_sim.py` | PTY-based Yukon serial simulator for offline testing (headless) |
+| `tools/yukon_sim_gui.py` | Yukon simulator with Pygame UI — live motor/LED/fault display |
+| `tools/yukon_sim_web.py` | Yukon simulator with web UI at port 5002 — fault injection, LED toggle |
+| `tools/read_data_log.py` | Flask JSONL data-log viewer at port 5004 — Drive, Telemetry, GPS map, LiDAR, Inspector tabs |
 | `tools/calibrate_camera.py` | Interactive calibration tool — zone guidance, auto-capture, mirror mode; saves `camera_cal.npz` at 1456×1088 |
+| `tools/derive_calibrations.py` | Scales a master calibration to any set of target resolutions; writes per-resolution `.npz` files |
 | `tools/generate_aruco_tags.py` | CLI tool to generate ArUco tag PDFs (custom IDs, paper size, dictionary) |
 | `tools/make_checkerboard_pdf.py` | Generates printable checkerboard calibration target PDF |
 | `yukon_firmware_and_software/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
-| `tools/test_*.py` | Unit tests and live-display tools for iBUS, LiDAR, protocol, GPS, BNO085, ArUco |
+| `tools/test_gnss.py` | 57 unit tests for the `gnss/` package — no hardware required |
+| `tools/test_*.py` | Unit tests and live-display tools for iBUS, LiDAR, protocol, GPS, BNO085, ArUco, robot integration |
 
 ---
 
@@ -70,7 +76,7 @@ RC receiver ──► _rc_thread ──► RobotState.drive (throttle/steer)
                                      │
                               _control_thread (50 Hz)
                                      │
-                              _YukonLink.set_motors()
+                              _YukonLink.drive(left, right)
                                      │
                               5-byte serial packet ──► Yukon RP2040
                                                         Core1: applies speeds
@@ -79,7 +85,7 @@ RC receiver ──► _rc_thread ──► RobotState.drive (throttle/steer)
 _Camera._run() ──► capture_array() ──► BGR→RGB ──► rotate ──► ArUco detect
                 ──► RobotState.camera_ok, latest frame, aruco_state
 
-_Lidar._run() ──► LD06 packets ──► LidarScan(angles, distances, rpm)
+_Lidar._run() ──► LD06 packets ──► LidarScan(angles, distances)
                ──► RobotState.lidar
 
 _Gps._run() ──► NMEA parse ──► GpsState(lat, lon, fix_quality, …)
@@ -98,25 +104,29 @@ _System._run() ──► psutil CPU/mem/disk ──► SystemState
 ```python
 @dataclass
 class RobotState:
-    mode:        RobotMode      # MANUAL | AUTO
-    auto_type:   AutoType       # CAMERA | GPS | CAMERA_GPS
-    drive:       DriveState     # left/right motor speeds, throttle, steer
-    telemetry:   Telemetry      # voltage, current, temps, faults
-    gps:         GpsState       # lat, lon, fix_quality, hdop, satellites, …
-    lidar:       LidarScan      # angles[], distances[], rpm
-    system:      SystemState    # CPU%, temp, mem, disk
-    rc_active:   bool
-    camera_ok:   bool
-    lidar_ok:    bool
-    gps_ok:      bool
-    aruco_ok:    bool
-    gps_logging: bool
-    speed_scale: float          # current speed limit (0.0–1.0)
-    nav_state:   str            # navigator state name (e.g. "SEARCHING", "PASSING")
-    nav_gate:    int            # ArUco target gate index
-    nav_wp:      int            # GPS target waypoint index
-    nav_wp_dist: Optional[float]  # metres to current GPS waypoint
-    nav_wp_bear: Optional[float]  # bearing to current GPS waypoint
+    mode:           RobotMode       # MANUAL | AUTO | ESTOP
+    auto_type:      AutoType        # CAMERA | GPS | CAMERA_GPS
+    drive:          DriveState      # left/right motor speeds, throttle, steer
+    telemetry:      Telemetry       # voltage, current, temps, faults
+    gps:            GpsState        # lat, lon, fix_quality, hdop, satellites, …
+    lidar:          LidarScan       # angles[], distances[], timestamp
+    system:         SystemState     # CPU%, temp, mem, disk
+    rc_active:      bool
+    camera_ok:      bool
+    lidar_ok:       bool
+    gps_ok:         bool
+    aruco_ok:       bool
+    gps_logging:    bool
+    cam_recording:  bool
+    data_logging:   bool
+    no_motors:      bool            # drive commands suppressed (bench testing)
+    speed_scale:    float           # current speed limit (0.0–1.0)
+    nav_state:      str             # navigator state name (e.g. "SEARCHING", "PASSING")
+    nav_gate:       int             # ArUco target gate index
+    nav_wp:         int             # GPS target waypoint index
+    nav_wp_dist:    Optional[float] # metres to current GPS waypoint
+    nav_wp_bear:    Optional[float] # bearing to current GPS waypoint
+    nav_bearing_err: Optional[float] # ArUco navigator bearing error (degrees)
 ```
 
 `SystemState` (Pi health, polled by `_System` thread):

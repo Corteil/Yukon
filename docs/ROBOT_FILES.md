@@ -74,7 +74,7 @@ robot.is_data_logging()             # bool
 
 robot.stop()                        # shutdown all subsystems cleanly
 
-# LED strip (NeoPixel, 8 LEDs on Yukon SLOT1)
+# LED strip (NeoPixel, 8 LEDs on Yukon SLOT3)
 robot.yukon.set_strip(preset)           # fill all 8 LEDs with a colour preset
                                         # preset: STRIP_OFF(0) … STRIP_WHITE(8)
 robot.yukon.set_pixel(index, colour)    # stage one pixel (0-indexed); call show_pixels() to commit
@@ -96,8 +96,8 @@ Colour preset constants (defined on `_YukonLink`):
 | `STRIP_RED` | 1 | (255, 0, 0) |
 | `STRIP_GREEN` | 2 | (0, 255, 0) |
 | `STRIP_BLUE` | 3 | (0, 0, 255) |
-| `STRIP_ORANGE` | 4 | (255, 80, 0) |
-| `STRIP_YELLOW` | 5 | (255, 200, 0) |
+| `STRIP_ORANGE` | 4 | (255, 165, 0) |
+| `STRIP_YELLOW` | 5 | (255, 255, 0) |
 | `STRIP_CYAN` | 6 | (0, 255, 255) |
 | `STRIP_MAGENTA` | 7 | (255, 0, 255) |
 | `STRIP_WHITE` | 8 | (255, 255, 255) |
@@ -281,10 +281,11 @@ Leave a value blank to use the default.
 | `images_dir` | `~/Pictures/HackyRacingRobot` | Snapshots from `camera_web.py` and `camera_monitor.py` |
 | `videos_dir` | `~/Videos/HackyRacingRobot` | MP4 recordings from camera recording feature |
 | `data_log_dir` | `~/Documents/HackyRacingRobot` | JSONL ML training data logs |
+| `max_recording_minutes` | `0` (unlimited) | Roll video to a new file every N minutes; `0` = no limit |
 
 Directories are created automatically on first use.
 
-Video filenames: `recording_YYYYMMDD_HHMMSS.mp4` — each frame has a `DD-MM-YY HH:MM:SS` timestamp burned in the top-left corner.
+Video filenames: `recording_YYYYMMDD_HHMMSS.mp4` — each frame has a `DD-MM-YY HH:MM:SS` timestamp burned in the top-left corner.  When `max_recording_minutes > 0` each segment gets its own timestamped filename.
 
 Data log filenames: `data_YYYYMMDD_HHMMSS.jsonl`
 
@@ -501,11 +502,13 @@ for gate in state.gates.values():
 
 Autonomous gate navigator.  State machine:
 `IDLE → SEARCHING → ALIGNING → APPROACHING → PASSING → COMPLETE`
+with `RECOVERING` when a gate is lost mid-approach.
 
-- `SEARCHING` — rotates to find the next gate; uses IMU heading for stepped search
+- `SEARCHING` — rotates in IMU-controlled steps to find the next gate
 - `ALIGNING` — steers toward the gate centre bearing
-- `APPROACHING` — drives forward while holding alignment
-- `PASSING` — straight-line burst through the gate at locked IMU heading (requires pose estimation distance < `pass_distance`)
+- `APPROACHING` — drives forward while holding alignment; LiDAR obstacle-stop active
+- `PASSING` — straight-line burst through the gate at locked IMU heading (`pass_distance` trigger); LiDAR obstacle-stop active
+- `RECOVERING` — gate lost while approaching; reverses briefly then returns to SEARCHING
 
 Requires ArUco detection + optionally the BNO085 IMU (via Yukon telemetry) for
 heading hold between camera frames.
@@ -516,12 +519,15 @@ All parameters are read from `[navigator]` in `robot.ini`.
 
 #### robot/gps_navigator.py
 
-GPS waypoint navigator.  Loads waypoints from a JSON file and navigates through
-them in sequence using GPS bearing and IMU heading hold between fixes.
+GPS waypoint navigator.  Loads waypoints from a versioned JSON file
+(`{"version": 1, "waypoints": [...]}`) and navigates through them in
+sequence using GPS bearing and IMU heading hold between fixes.
 
 - GPS fix (≤10 Hz) sets the IMU target heading via Haversine bearing
 - 50 Hz control loop steers by IMU heading error between GPS updates
 - Waypoint arrival detected by distance threshold (`arrival_radius`)
+- Look-ahead smoothing: starts blending toward the next waypoint's bearing when within `lookahead_m` metres, reducing overshoot at transitions
+- LiDAR obstacle-stop: halts when any point in the forward cone is closer than `obstacle_stop_dist` metres
 
 All parameters are read from `[gps_navigator]` in `robot.ini`.
 
@@ -539,11 +545,12 @@ comment in the file.  Key sections:
 | `[camera]` | Resolution, fps, rotation |
 | `[aruco]` | Detection dict, calibration file template, tag size |
 | `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |
-| `[navigator]` | ArUco gate navigator tuning |
-| `[gps_navigator]` | GPS waypoint navigator tuning |
+| `[navigator]` | ArUco gate navigator tuning (obstacle stop, recovery, search) |
+| `[gps_navigator]` | GPS waypoint navigator tuning (lookahead, obstacle stop, arrival) |
 | `[lidar]` | LiDAR port |
 | `[gps]` | GPS port, log directory, log rate |
 | `[ntrip]` | RTK correction caster credentials |
+| `[output]` | Output directories, `max_recording_minutes` |
 | `[gui]` | Pygame GUI fps |
 | `[web]` | Web dashboard host / port |
 | `[mobile]` | Mobile dashboard host / port |

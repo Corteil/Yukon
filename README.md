@@ -6,6 +6,8 @@ Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Pi reads an RC 
 
 ## Quick start
 
+> **Run only ONE frontend at a time.** `robot_gui.py`, `robot_web.py`, and `robot_mobile.py` each open the same hardware ports — running two simultaneously causes port conflicts.
+
 ```bash
 # Full robot stack with pygame GUI
 python3 robot_gui.py
@@ -36,7 +38,7 @@ python3 camera_web.py
 | Component | Detail |
 |-----------|--------|
 | Pimoroni Yukon | RP2040-based motor controller |
-| LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT1 |
+| LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
 | Left motors | `DualMotorModule` in SLOT2 |
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS on GPIO 9 / `/dev/ttyAMA3` |
@@ -97,6 +99,8 @@ Configured via `[output]` in `robot.ini` — all default to the Pi user's home f
 | Camera snapshots | `~/Pictures/HackyRacingRobot/` |
 | Video recordings | `~/Videos/HackyRacingRobot/` |
 | ML data logs (JSONL) | `~/Documents/HackyRacingRobot/` |
+
+Set `max_recording_minutes` in `[output]` to roll video to a new file automatically (0 = unlimited).
 
 ---
 

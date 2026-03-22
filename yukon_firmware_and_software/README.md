@@ -17,7 +17,7 @@ python3 tools/upload.py yukon_firmware_and_software/main.py
 
 | Slot | Module | Role |
 |------|--------|------|
-| SLOT1 | `LEDStripModule` (NeoPixel, 8 LEDs) | Status LED strip |
+| SLOT3 | `LEDStripModule` (NeoPixel, 8 LEDs) | Status LED strip |
 | SLOT2 | `DualMotorModule` | Left motors |
 | SLOT5 | `DualMotorModule` | Right motors |
 | Qw/ST I2C | BNO085 (optional) | Heading for bearing hold |
@@ -107,7 +107,7 @@ Each data packet: `[SYNC, RESP_TYPE, V_HIGH, V_LOW, CHK]` where `RESP_TYPE = sen
 
 ### LED strip
 
-The NeoPixel LED strip module in SLOT1 provides visual status feedback.
+The NeoPixel LED strip module in SLOT3 provides visual status feedback.
 
 **Colour palette (indices 0–8):** off, red, green, blue, orange, yellow, cyan, magenta, white
 

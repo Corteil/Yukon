@@ -12,9 +12,9 @@ Features
   Delete       : right-click waypoint
   Reorder      : drag rows in the sidebar list
   Labels       : click label in sidebar to edit inline
-  Import       : load waypoints.json or GPS log CSV
-  Export       : save waypoints.json
-  Live mode    : connect to robot.py → show live GPS position + accuracy ring,
+  Import       : load waypoints.json (versioned format) or GPS log CSV
+  Export       : save waypoints.json (versioned format: {"version":1, "waypoints":[...]})
+  Live mode    : connect to robot_daemon.py → show live GPS position + accuracy ring,
                  record track, optionally send route to GPS navigator
 
 Controls
@@ -35,7 +35,7 @@ Usage
 -----
   python3 gps_route_builder.py
   python3 gps_route_builder.py --waypoints my_route.json
-  python3 gps_route_builder.py --live      # connect to robot.py
+  python3 gps_route_builder.py --live      # connect to robot_daemon.py
 
 Dependencies
 ------------
@@ -481,7 +481,7 @@ def _fmt_distance(waypoints):
 # ── Live robot thread ─────────────────────────────────────────────────────────
 
 class LiveRobot:
-    """Polls robot.py state in a background thread."""
+    """Polls robot_daemon.py Robot state in a background thread."""
 
     def __init__(self):
         self._state    = None
@@ -563,16 +563,16 @@ class LiveRobot:
 def load_json(path) -> List[Waypoint]:
     with open(path) as f:
         data = json.load(f)
-    return [Waypoint.from_dict(d) for d in data]
+    return [Waypoint.from_dict(d) for d in data['waypoints']]
 
 
 def save_json(waypoints, path):
     with open(path, 'w') as f:
-        json.dump([w.to_dict() for w in waypoints], f, indent=2)
+        json.dump({'version': 1, 'waypoints': [w.to_dict() for w in waypoints]}, f, indent=2)
 
 
 def load_csv(path) -> List[Waypoint]:
-    """Import from robot.py GPS log CSV. Uses latitude/longitude columns."""
+    """Import from robot_daemon.py GPS log CSV. Uses latitude/longitude columns."""
     wps   = []
     seen  = set()
     with open(path, newline='') as f:

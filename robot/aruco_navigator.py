@@ -11,7 +11,7 @@ When a heading is supplied to update() three features are enabled:
 
   1. Heading hold between camera frames
      When the camera gives a bearing update the navigator sets an IMU target
-     heading (_imu_target). On frames where tags are visible but heading
+     heading (_imu_target). On frames where tags are not visible but heading
      is available the robot steers to maintain that heading rather than
      relying solely on the camera bearing each frame.  This removes the
      camera frame-rate bottleneck from the steering loop entirely.
@@ -26,6 +26,22 @@ When a heading is supplied to update() three features are enabled:
      On entering PASSING the navigator calls yukon.set_bearing(heading) so
      the Yukon's onboard PID holds the robot dead-straight through the gate.
      clear_bearing() is called on exit.
+
+Recovery behaviour
+------------------
+If the gate is lost while APPROACHING (robot was close and driving forward),
+the navigator enters RECOVERING: it reverses briefly (recover_reverse_time
+seconds at recover_reverse_speed) to create distance from the gate line
+before transitioning back to SEARCHING.  This avoids overshooting the gate
+unseen.  Gate loss from ALIGNING or SEARCHING goes straight to SEARCHING.
+
+LiDAR obstacle stop
+-------------------
+If a LidarScan is passed to update(), the navigator halts (returns 0, 0)
+whenever any point within the forward cone (obstacle_cone_deg wide) is
+closer than obstacle_stop_dist metres.  The check is skipped during
+SEARCHING and RECOVERING (robot is rotating or reversing, not driving into
+an obstacle).
 
 Gate sequencing
 ---------------
@@ -63,6 +79,7 @@ class NavState(Enum):
     ALIGNING    = auto()
     APPROACHING = auto()
     PASSING     = auto()
+    RECOVERING  = auto()   # gate lost mid-approach: reverse briefly then search
     COMPLETE    = auto()
     ERROR       = auto()
 
@@ -71,21 +88,25 @@ class NavState(Enum):
 
 @dataclass
 class NavConfig:
-    max_gates:         int   = 10
-    tag_size:          float = 0.15
-    pass_distance:     float = 0.6
-    pass_time:         float = 0.8
-    search_speed:      float = 0.25
-    search_step_deg:   float = 45.0
-    search_step_pause: float = 0.3
-    fwd_speed:         float = 0.45
-    align_fwd_speed:   float = 0.15
-    steer_kp:          float = 0.6
-    imu_kp:            float = 0.5
-    align_deadband:    float = 3.0
-    ramp_rate:         float = 2.0
-    tag_offset_k:      float = 0.4
-    pixel_offset_k:    float = 5000
+    max_gates:             int   = 10
+    tag_size:              float = 0.15
+    pass_distance:         float = 0.6
+    pass_time:             float = 0.8
+    search_speed:          float = 0.25
+    search_step_deg:       float = 45.0
+    search_step_pause:     float = 0.3
+    fwd_speed:             float = 0.45
+    align_fwd_speed:       float = 0.15
+    steer_kp:              float = 0.6
+    imu_kp:                float = 0.5
+    align_deadband:        float = 3.0
+    ramp_rate:             float = 2.0
+    tag_offset_k:          float = 0.4
+    pixel_offset_k:        float = 5000
+    obstacle_stop_dist:    float = 0.5   # metres — halt if obstacle closer than this
+    obstacle_cone_deg:     float = 60.0  # forward cone full width for LiDAR check
+    recover_reverse_time:  float = 0.4   # seconds to reverse when gate lost mid-approach
+    recover_reverse_speed: float = 0.20  # reverse speed during recovery
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -104,6 +125,25 @@ def _ramp(current: float, target: float, max_delta: float) -> float:
 def _angle_diff(target: float, current: float) -> float:
     """Signed shortest-arc difference (target − current), range −180..+180."""
     return (target - current + 180.0) % 360.0 - 180.0
+
+
+def _lidar_clear(lidar, cone_half_deg: float, stop_dist_m: float) -> bool:
+    """Return True if the forward cone is clear, False if an obstacle is detected.
+
+    lidar        : LidarScan (angles 0–360°, distances in mm; empty → clear)
+    cone_half_deg: half-width of the forward cone in degrees (e.g. 30 for a 60° cone)
+    stop_dist_m  : halt threshold in metres
+    """
+    if not lidar or not lidar.angles:
+        return True
+    stop_mm = stop_dist_m * 1000.0
+    for ang, dist in zip(lidar.angles, lidar.distances):
+        if dist <= 0:
+            continue
+        rel = (ang + 180.0) % 360.0 - 180.0   # normalise 0° = forward, −180..+180
+        if abs(rel) <= cone_half_deg and dist <= stop_mm:
+            return False
+    return True
 
 
 def _pixel_bearing(target_x: int, frame_cx: int, hfov_deg: float = 62.0) -> float:
@@ -145,6 +185,9 @@ class ArucoNavigator:
         self._search_pausing: bool            = False
         self._search_pause_end: float         = 0.0
 
+        # RECOVERING state timer
+        self._recover_start: float = 0.0
+
         # Ramped motor outputs
         self._cur_left  = 0.0
         self._cur_right = 0.0
@@ -167,21 +210,25 @@ class ArucoNavigator:
         def _i(k, d): return int(sec.get(k, d))
 
         cfg = NavConfig(
-            max_gates         = _i("max_gates",         NavConfig.max_gates),
-            tag_size          = _f("tag_size",          NavConfig.tag_size),
-            pass_distance     = _f("pass_distance",     NavConfig.pass_distance),
-            pass_time         = _f("pass_time",         NavConfig.pass_time),
-            search_speed      = _f("search_speed",      NavConfig.search_speed),
-            search_step_deg   = _f("search_step_deg",   NavConfig.search_step_deg),
-            search_step_pause = _f("search_step_pause", NavConfig.search_step_pause),
-            fwd_speed         = _f("fwd_speed",         NavConfig.fwd_speed),
-            align_fwd_speed   = _f("align_fwd_speed",   NavConfig.align_fwd_speed),
-            steer_kp          = _f("steer_kp",          NavConfig.steer_kp),
-            imu_kp            = _f("imu_kp",            NavConfig.imu_kp),
-            align_deadband    = _f("align_deadband",    NavConfig.align_deadband),
-            ramp_rate         = _f("ramp_rate",         NavConfig.ramp_rate),
-            tag_offset_k      = _f("tag_offset_k",      NavConfig.tag_offset_k),
-            pixel_offset_k    = _f("pixel_offset_k",    NavConfig.pixel_offset_k),
+            max_gates             = _i("max_gates",             NavConfig.max_gates),
+            tag_size              = _f("tag_size",              NavConfig.tag_size),
+            pass_distance         = _f("pass_distance",         NavConfig.pass_distance),
+            pass_time             = _f("pass_time",             NavConfig.pass_time),
+            search_speed          = _f("search_speed",          NavConfig.search_speed),
+            search_step_deg       = _f("search_step_deg",       NavConfig.search_step_deg),
+            search_step_pause     = _f("search_step_pause",     NavConfig.search_step_pause),
+            fwd_speed             = _f("fwd_speed",             NavConfig.fwd_speed),
+            align_fwd_speed       = _f("align_fwd_speed",       NavConfig.align_fwd_speed),
+            steer_kp              = _f("steer_kp",              NavConfig.steer_kp),
+            imu_kp                = _f("imu_kp",                NavConfig.imu_kp),
+            align_deadband        = _f("align_deadband",        NavConfig.align_deadband),
+            ramp_rate             = _f("ramp_rate",             NavConfig.ramp_rate),
+            tag_offset_k          = _f("tag_offset_k",         NavConfig.tag_offset_k),
+            pixel_offset_k        = _f("pixel_offset_k",       NavConfig.pixel_offset_k),
+            obstacle_stop_dist    = _f("obstacle_stop_dist",   NavConfig.obstacle_stop_dist),
+            obstacle_cone_deg     = _f("obstacle_cone_deg",    NavConfig.obstacle_cone_deg),
+            recover_reverse_time  = _f("recover_reverse_time", NavConfig.recover_reverse_time),
+            recover_reverse_speed = _f("recover_reverse_speed",NavConfig.recover_reverse_speed),
         )
         return cls(cfg)
 
@@ -224,6 +271,7 @@ class ArucoNavigator:
         frame_width: int,
         heading: Optional[float] = None,
         yukon=None,
+        lidar=None,
     ) -> Tuple[float, float]:
         """
         Process one camera frame, return (left, right) motor speeds −1..+1.
@@ -235,6 +283,7 @@ class ArucoNavigator:
         heading     : current IMU heading in degrees (None = no IMU)
         yukon       : _YukonLink instance for set_bearing/clear_bearing,
                       or None to skip onboard bearing hold
+        lidar       : LidarScan snapshot for obstacle avoidance, or None
         """
         now = time.monotonic()
         dt  = min(now - self._last_update, 0.1)
@@ -245,6 +294,28 @@ class ArucoNavigator:
             return 0.0, 0.0
 
         frame_cx = frame_width // 2
+
+        # ── RECOVERING ────────────────────────────────────────────────────────
+        # Gate was lost mid-approach: reverse briefly to create distance, then
+        # transition to SEARCHING so the rotation can re-acquire the tag.
+        if self._state == NavState.RECOVERING:
+            if (now - self._recover_start) >= self.cfg.recover_reverse_time:
+                self._reset_search()
+                self._set_state(NavState.SEARCHING)
+            return self._apply_ramp(
+                -self.cfg.recover_reverse_speed,
+                -self.cfg.recover_reverse_speed, dt,
+            )
+
+        # ── LiDAR obstacle check ──────────────────────────────────────────────
+        # Only applied when moving forward; skipped during search rotation.
+        if (lidar is not None and
+                self._state in (NavState.ALIGNING, NavState.APPROACHING, NavState.PASSING) and
+                not _lidar_clear(lidar,
+                                 self.cfg.obstacle_cone_deg / 2.0,
+                                 self.cfg.obstacle_stop_dist)):
+            log.warning("Obstacle in forward cone — halting (gate %d)", self._gate_id)
+            return self._apply_ramp(0.0, 0.0, dt)
 
         # ── PASSING ───────────────────────────────────────────────────────────
         # Yukon's onboard bearing PID keeps us straight while we drive forward.
@@ -261,8 +332,19 @@ class ArucoNavigator:
         self.target_x = target_x
         self.tag_dist = dist
 
-        # ── SEARCHING ─────────────────────────────────────────────────────────
+        # ── Gate lost ─────────────────────────────────────────────────────────
         if target_x is None:
+            if self._state == NavState.APPROACHING:
+                # Lost close to the gate — reverse briefly before searching so
+                # we don't overshoot into or past the gate unseen.
+                log.debug("Gate %d lost during approach — recovering", self._gate_id)
+                self._imu_target    = None
+                self._recover_start = now
+                self._set_state(NavState.RECOVERING)
+                return self._apply_ramp(
+                    -self.cfg.recover_reverse_speed,
+                    -self.cfg.recover_reverse_speed, dt,
+                )
             if self._state != NavState.SEARCHING:
                 log.debug("Gate %d lost — searching", self._gate_id)
                 self._imu_target = None
@@ -466,21 +548,25 @@ class ArucoNavigator:
 # ── robot.ini [navigator] reference ──────────────────────────────────────────
 #
 # [navigator]
-# max_gates         = 10
-# tag_size          = 0.15
-# pass_distance     = 0.6
-# pass_time         = 0.8
-# search_speed      = 0.25
-# search_step_deg   = 45.0
-# search_step_pause = 0.3
-# fwd_speed         = 0.45
-# align_fwd_speed   = 0.15
-# steer_kp          = 0.6
-# imu_kp            = 0.5
-# align_deadband    = 3.0
-# ramp_rate         = 2.0
-# tag_offset_k      = 0.4
-# pixel_offset_k    = 5000
+# max_gates             = 10
+# tag_size              = 0.15
+# pass_distance         = 0.6
+# pass_time             = 0.8
+# search_speed          = 0.25
+# search_step_deg       = 45.0
+# search_step_pause     = 0.3
+# fwd_speed             = 0.45
+# align_fwd_speed       = 0.15
+# steer_kp              = 0.6
+# imu_kp                = 0.5
+# align_deadband        = 3.0
+# ramp_rate             = 2.0
+# tag_offset_k          = 0.4
+# pixel_offset_k        = 5000
+# obstacle_stop_dist    = 0.5    # metres — halt if LiDAR detects obstacle closer than this
+# obstacle_cone_deg     = 60.0   # full width of forward cone for obstacle check
+# recover_reverse_time  = 0.4    # seconds to reverse when gate lost mid-approach
+# recover_reverse_speed = 0.20   # reverse speed during recovery
 #
 # [aruco]
 # enabled    = true

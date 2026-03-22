@@ -13,10 +13,10 @@ Features
   Delete       : click waypoint → delete button in popup
   Reorder      : drag rows in sidebar list
   Labels       : click label in sidebar to edit inline
-  Import JSON  : upload waypoints.json
-  Import CSV   : upload GPS log CSV from robot.py
-  Export JSON  : download waypoints.json
-  Live mode    : SSE stream from robot.py → live robot position + accuracy ring,
+  Import JSON  : upload waypoints.json (versioned format)
+  Import CSV   : upload GPS log CSV from robot_daemon.py
+  Export JSON  : download waypoints.json (versioned format: {"version":1, "waypoints":[...]})
+  Live mode    : SSE stream from robot_daemon.py → live robot position + accuracy ring,
                  GPS track overlay, nav state badge
   Send route   : push current waypoints to GPS navigator
 
@@ -24,7 +24,7 @@ Usage
 -----
   python3 gps_route_builder_web.py              # 0.0.0.0:5003
   python3 gps_route_builder_web.py --port 8080
-  python3 gps_route_builder_web.py --live       # auto-connect to robot.py
+  python3 gps_route_builder_web.py --live       # auto-connect to robot_daemon.py
 
 Dependencies
 ------------
@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 
 _lock      = threading.Lock()
 _waypoints = []     # list of {"lat", "lon", "label"}
-_robot     = None   # robot.py Robot instance when connected
+_robot     = None   # robot_daemon.py Robot instance when connected
 _track     = []     # [(lat, lon), ...] recorded GPS track
 _live_state= None   # latest robot state snapshot
 
@@ -223,7 +223,7 @@ def reorder_waypoints():
 @app.route('/api/waypoints/export')
 def export_waypoints():
     with _lock:
-        data = json.dumps(_waypoints, indent=2)
+        data = json.dumps({'version': 1, 'waypoints': list(_waypoints)}, indent=2)
     return Response(data, mimetype='application/json',
                     headers={'Content-Disposition':
                              'attachment; filename="waypoints.json"'})
@@ -239,12 +239,9 @@ def import_waypoints():
         if f.filename.endswith('.csv'):
             wps = _import_csv(text)
         else:
-            wps = json.loads(text)
-            if isinstance(wps, list):
-                wps = [{'lat': float(w['lat']), 'lon': float(w['lon']),
-                        'label': str(w.get('label', ''))} for w in wps]
-            else:
-                raise ValueError("Expected JSON array")
+            parsed = json.loads(text)
+            wps = [{'lat': float(w['lat']), 'lon': float(w['lon']),
+                    'label': str(w.get('label', ''))} for w in parsed['waypoints']]
         with _lock:
             _waypoints.clear()
             _waypoints.extend(wps)

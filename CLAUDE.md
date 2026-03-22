@@ -16,7 +16,7 @@ HackyRacingRobot/
 ├── camera_monitor.py        # Standalone Pygame camera tool
 ├── camera_web.py            # Standalone web camera tool at :8080
 ├── lidar_gui.py             # Standalone Pygame LiDAR visualizer
-├── robot_utils.py           # _cfg() config helper; setup_logging()
+├── robot_utils.py           # _cfg() config helper; _local_ip()
 ├── robot.ini                # ALL runtime configuration (every param has a comment)
 ├── requirements.txt         # pip dependencies
 │
@@ -77,7 +77,7 @@ The `Robot` class is the **sole backend**. All three frontends (GUI, web, mobile
 | `system` | 1 Hz | CPU/mem/disk metrics |
 
 **Thread safety rules:**
-- `_lock` protects camera frame, GPS state, LiDAR scan, and RC channel data.
+- `_lock` protects camera frame, GPS state, and LiDAR scan.
 - `_cmd_lock` serializes Yukon send+drain pairs — never interleave commands.
 - `robot.get_state()` returns an immutable `RobotState` dataclass snapshot — safe to read from any thread.
 - Queues (not locks) carry ACK/NAK and sensor data to avoid priority inversion.
@@ -122,11 +122,15 @@ RobotState          # Full snapshot returned by get_state()
 | CMD byte | Name | Purpose |
 |----------|------|---------|
 | 0x21 | CMD_LED | Set LED colour |
-| 0x22 | CMD_LEFT | Left motor speed (encoded 0–100) |
+| 0x22 | CMD_LEFT | Left motor speed (encoded 0–200) |
 | 0x23 | CMD_RIGHT | Right motor speed |
 | 0x24 | CMD_KILL | Zero both motors |
 | 0x25 | CMD_SENSOR | Request telemetry packet |
 | 0x26 | CMD_BEARING | IMU heading hold (0–254 → 0–359°) |
+| 0x27 | CMD_STRIP | Fill all LEDs with colour preset |
+| 0x28 | CMD_PIXEL_SET | Stage one pixel colour (no hardware update) |
+| 0x29 | CMD_PIXEL_SHOW | Push staged pixel data to strip |
+| 0x2A | CMD_PATTERN | Start autonomous LED animation |
 
 Responses: `ACK (0x06)` / `NAK (0x15)`. Sensor data comes as a sequence of 5-byte `(RESP_TYPE, V_HIGH, V_LOW, CHK)` packets followed by ACK. See `docs/PROTOCOL.md` for full encoding.
 
@@ -144,12 +148,18 @@ Key sections:
 | `[rc]` | Channel map, deadzone, failsafe, 50 Hz control rate |
 | `[camera]` | Resolution, fps, rotation |
 | `[aruco]` | Dictionary, calibration file, tag size |
+| `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |
+| `[leds]` | LED preset per mode (manual/auto/estop) |
 | `[lidar]` | LD06 port |
 | `[gps]` | TAU1308 port, log dir, log rate |
 | `[ntrip]` | NTRIP caster host/port/mount/credentials |
+| `[rtcm]` | Serial RTCM correction input (alternative to NTRIP) |
 | `[navigator]` | ArUco gate navigator PID tuning |
 | `[gps_navigator]` | GPS waypoint navigator tuning |
-| `[output]` | Snapshot/video/data-log directories |
+| `[output]` | Snapshot/video/data-log directories, recording limits |
+| `[gui]` | Pygame GUI fps |
+| `[web]` | Web dashboard host/port |
+| `[mobile]` | Mobile dashboard host/port |
 
 Every value can be overridden via CLI flag — run `python3 robot_daemon.py --help`.
 

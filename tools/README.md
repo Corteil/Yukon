@@ -201,7 +201,7 @@ The iBUS port is set to a non-existent path — the rc_reader thread logs a warn
 
 ### test_leds.py
 
-Host-side tests for the NeoPixel LED strip module (SLOT1).
+Host-side tests for the NeoPixel LED strip module (SLOT3).
 Tests all colour presets, individual pixel control, `set_pixels()`, and all built-in patterns.
 
 ```
@@ -440,6 +440,7 @@ Use this instead of `mpremote` or `ampy` — those fail because `yukon.reset()` 
 ### gps_route_builder.py
 
 Pygame GUI for recording and editing GPS waypoint routes.
+Saves and loads the versioned JSON format: `{"version": 1, "waypoints": [...]}`.
 
 ```bash
 python3 tools/gps_route_builder.py
@@ -456,6 +457,7 @@ python3 tools/gps_route_builder.py --waypoints route.json --live
 ### gps_route_builder_web.py
 
 Web-based GPS route builder — browser UI for recording and editing waypoints.
+Exports the versioned JSON format: `{"version": 1, "waypoints": [...]}`.
 
 ```bash
 python3 tools/gps_route_builder_web.py
