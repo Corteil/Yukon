@@ -73,7 +73,7 @@ pip install pyserial picamera2 pygame opencv-python-headless flask pillow psutil
 Use `tools/upload.py` (not `mpremote` or `ampy` — these fail because `yukon.reset()` drops USB on every Ctrl+C):
 
 ```bash
-python3 tools/upload.py main.py
+python3 tools/upload.py yukon_firmware_and_software/main.py
 ```
 
 This handles the double USB reconnect caused by `yukon.reset()` on each Ctrl+C interrupt before entering the raw REPL.
@@ -82,7 +82,7 @@ This handles the double USB reconnect caused by `yukon.reset()` on each Ctrl+C i
 
 ## Camera channel order
 
-picamera2 `RGB888` format returns BGR bytes in memory. `robot.py` and `camera_monitor.py` both apply `[:, :, ::-1]` immediately after `capture_array()` to correct this before any processing or display.
+picamera2 `RGB888` format returns BGR bytes in memory. `robot_daemon.py` and `camera_monitor.py` both apply `[:, :, ::-1]` immediately after `capture_array()` to correct this before any processing or display.
 
 ---
 
@@ -101,11 +101,12 @@ The camera is an IMX296 global shutter module with a 2.1 mm lens (~100° FOV). C
    - Press `M` to mirror the display (useful when holding the board yourself).
    - Press `A` to toggle auto-capture (default: on — holds still for 1.2 s then captures).
    - Cover all 9 zones shown on screen (corners, edges, centre) from various angles.
-   - Press `S` to save when you have ≥ 20 captures; press `Q` to quit.
+   - Press `C` to compute calibration once you have ≥ 6 captures (more = better, aim for 20+).
+   - Press `Q` or `Esc` to quit — calibration is saved automatically if computed.
    - Output: `camera_cal.npz` in the repo root.
 3. Once `camera_cal.npz` exists, `camera_monitor.py` and `camera_web.py` show a **Calib** toggle (key `K`) to enable lens undistortion.
 
-> **Important:** The calibration must be done at native resolution (1456×1088) with the actual IMX296 camera. Calibrations from other cameras or resolutions will not apply correctly.
+> **Important:** Calibrate at the same resolution the camera runs at (default **640×480** in `robot.ini`). The maps are resolution-specific — a calibration at 1456×1088 will not apply to a 640×480 stream and undistortion will be silently skipped.
 
 ---
 

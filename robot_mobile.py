@@ -6,17 +6,19 @@ Same Robot backend as robot_web.py; touch-friendly tab UI designed for phones.
 
 Tabs
 ----
-  Drive   — camera stream, motor bars, mode/speed, ArUco
-  Telem   — voltage, current, temperatures, faults
+  Drive   — camera stream, bearing overlay, motor bars, mode/speed, ArUco, nav state
+  Telem   — voltage, current, temperatures, IMU heading compass, faults
   GPS     — fix, position, error, satellites, bookmark
   System  — CPU, temp, memory, disk, lidar plot
 
 ESTOP button is always visible at the bottom.
+No-motors banner shown when --no-motors is active.
 
 Usage
 -----
   python3 robot_mobile.py                  # 0.0.0.0:5001
   python3 robot_mobile.py --port 8080
+  python3 robot_mobile.py --no-motors      # bench-test mode
   python3 robot_mobile.py --config robot.ini
 """
 
@@ -32,7 +34,7 @@ import time
 from flask import Flask, Response, request, jsonify
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from robot import Robot, RobotMode, AutoType
+from robot_daemon import Robot, RobotMode, AutoType, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +68,37 @@ _jpeg_encode = None
 
 # ── State serialiser (mirrors robot_web.py) ────────────────────────────────────
 
-def _serialise(state, cam_rotation=0, aruco_enabled=False, aruco_state=None):
+def _serialise(state, cam_rotation=0, aruco_enabled=False,
+               aruco_state=None, nav_bearing_err=None):
     g, t, d, li, s = state.gps, state.telemetry, state.drive, state.lidar, state.system
     aruco_info = None
     if aruco_enabled and aruco_state is not None:
+        tags_detail = []
+        for tag in aruco_state.tags.values():
+            tags_detail.append({
+                'id':       tag.id,
+                'cx':       tag.center_x,
+                'cy':       tag.center_y,
+                'area':     tag.area,
+                'bearing':  tag.bearing,
+                'distance': tag.distance,
+            })
+        gates_detail = []
+        for gate in aruco_state.gates.values():
+            gates_detail.append({
+                'gate_id':    gate.gate_id,
+                'centre_x':  gate.centre_x,
+                'centre_y':  gate.centre_y,
+                'bearing':   gate.bearing,
+                'distance':  gate.distance,
+                'correct_dir': gate.correct_dir,
+            })
         aruco_info = {
             'tag_count':  len(aruco_state.tags),
             'gate_count': len(aruco_state.gates),
             'fps':        aruco_state.fps,
+            'tags':       tags_detail,
+            'gates':      gates_detail,
         }
     return {
         'mode':          state.mode.name,
@@ -87,6 +112,13 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False, aruco_state=None):
         'aruco_enabled': aruco_enabled,
         'cam_rotation':  cam_rotation,
         'gps_logging':   state.gps_logging,
+        'no_motors':     state.no_motors,
+        'nav_state':     state.nav_state,
+        'nav_gate':      state.nav_gate,
+        'nav_bearing_err': nav_bearing_err,
+        'nav_wp':        state.nav_wp,
+        'nav_wp_dist':   state.nav_wp_dist,
+        'nav_wp_bear':   state.nav_wp_bear,
         'aruco':         aruco_info,
         'drive': {
             'left':  round(d.left,  3),
@@ -100,6 +132,7 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False, aruco_state=None):
             'right_temp':  round(t.right_temp, 1),
             'left_fault':  t.left_fault,
             'right_fault': t.right_fault,
+            'heading':     round(t.heading, 1) if t.heading is not None else None,
         },
         'gps': {
             'latitude':         g.latitude,
@@ -132,8 +165,9 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False, aruco_state=None):
 
 # ── Flask ──────────────────────────────────────────────────────────────────────
 
-app    = Flask(__name__)
-_robot = None
+app       = Flask(__name__)
+_robot    = None
+_log_path = None
 
 
 @app.route('/')
@@ -164,11 +198,17 @@ def api_state():
     def _gen():
         while True:
             try:
+                nav_bearing_err = None
+                if _robot._navigator is not None:
+                    nav_bearing_err = _robot._navigator.bearing_err
+                elif _robot._gps_navigator is not None:
+                    nav_bearing_err = _robot._gps_navigator.heading_err
                 data = _serialise(
                     _robot.get_state(),
-                    cam_rotation  = _robot.get_cam_rotation(),
-                    aruco_enabled = _robot.get_aruco_enabled(),
-                    aruco_state   = _robot.get_aruco_state(),
+                    cam_rotation    = _robot.get_cam_rotation(),
+                    aruco_enabled   = _robot.get_aruco_enabled(),
+                    aruco_state     = _robot.get_aruco_state(),
+                    nav_bearing_err = nav_bearing_err,
                 )
                 yield f"data: {json.dumps(data)}\n\n"
             except Exception as exc:
@@ -194,6 +234,19 @@ def api_cmd():
     else:
         return jsonify({'ok': False, 'error': f'Unknown command: {cmd}'}), 400
     return jsonify({'ok': True})
+
+
+@app.route('/api/logs')
+def api_logs():
+    n = min(int(request.args.get('n', 200)), 500)
+    lines = []
+    if _log_path and os.path.exists(_log_path):
+        try:
+            with open(_log_path, 'r', errors='replace') as f:
+                lines = f.readlines()[-n:]
+        except OSError:
+            pass
+    return jsonify({'lines': [l.rstrip('\n') for l in lines]})
 
 
 # ── Mobile HTML ────────────────────────────────────────────────────────────────
@@ -406,9 +459,72 @@ html, body {
   border-radius: 20px; border: 1px solid var(--border);
   color: var(--gray);
 }
-.badge.ok  { border-color: var(--green); color: var(--green); }
+.badge.ok   { border-color: var(--green);  color: var(--green);  }
 .badge.warn { border-color: var(--yellow); color: var(--yellow); }
-.badge.err  { border-color: var(--red); color: var(--red); }
+.badge.err  { border-color: var(--red);    color: var(--red);    }
+.badge.info { border-color: var(--cyan);   color: var(--cyan);   }
+
+/* ── No-motors banner ── */
+#no-motors-banner {
+  display: none;
+  position: fixed; top: var(--hdr-h); left: 0; right: 0;
+  background: #3a0000; border-bottom: 1px solid var(--red);
+  z-index: 99; text-align: center;
+  color: var(--red); font-size: 0.75rem; font-weight: bold;
+  padding: 3px 0; letter-spacing: 1px;
+}
+
+/* ── Bearing overlay canvas ── */
+#bearing-canvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none; display: none;
+}
+
+/* ── Nav badge on camera ── */
+#nav-badge-cam {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 0.62rem; background: rgba(14,14,26,.85);
+  padding: 2px 7px; border-radius: 4px; display: none;
+}
+
+/* ── Compass (Telem tab) ── */
+.compass-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+#compass-canvas { width: 44px; height: 44px; flex-shrink: 0; }
+.hdg-detail { display: flex; flex-direction: column; gap: 2px; }
+#hdg-val { font-size: 1.1rem; font-weight: bold; color: var(--cyan); }
+#hdg-sub { font-size: 0.65rem; color: var(--gray); }
+
+/* ── Navigator state card ── */
+#nav-card { display: none; }
+.nav-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#nav-state-val { font-size: 1rem; font-weight: bold; }
+#nav-gate-val  { font-size: 0.85rem; color: var(--gray); }
+#nav-err-val   { font-size: 0.8rem; }
+
+/* ── Log viewer ── */
+#log-toolbar {
+  display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+}
+#log-filter {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  color: var(--white); border-radius: 6px; padding: 6px 10px;
+  font-family: inherit; font-size: 0.75rem;
+}
+#log-autoscroll-btn { white-space: nowrap; }
+#log-box {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px;
+  height: calc(100vh - var(--hdr-h) - var(--tab-h) - var(--estop-h) - 80px);
+  overflow-y: auto; font-size: 0.68rem; line-height: 1.5;
+  -webkit-overflow-scrolling: touch;
+}
+.log-line { white-space: pre-wrap; word-break: break-all; }
+.log-line.info     { color: #b0b0c8; }
+.log-line.warning  { color: var(--yellow); }
+.log-line.error    { color: var(--red); }
+.log-line.critical { color: var(--red); font-weight: bold; }
+.log-line.debug    { color: #585870; }
 </style>
 </head>
 <body>
@@ -420,6 +536,9 @@ html, body {
   <span id="h-speed"></span>
   <span id="h-conn">&#x26AB; …</span>
 </div>
+
+<!-- No-motors banner -->
+<div id="no-motors-banner">&#x26A0; NO-MOTORS MODE</div>
 
 <!-- Tab bar -->
 <div id="tabs">
@@ -435,6 +554,9 @@ html, body {
   <div class="tab" onclick="showTab('sys')" id="tab-sys">
     <span class="icon">&#x1F4BB;</span>System
   </div>
+  <div class="tab" onclick="showTab('logs')" id="tab-logs">
+    <span class="icon">&#x1F4C4;</span>Logs
+  </div>
 </div>
 
 <!-- Pages -->
@@ -448,11 +570,24 @@ html, body {
       <div id="cam-wrap">
         <img id="cam-img" src="/stream" alt="">
         <div id="cam-no">No camera signal</div>
+        <canvas id="bearing-canvas"></canvas>
+        <div id="nav-badge-cam"></div>
       </div>
       <div id="cam-btns">
+        <button class="btn" id="btn-bearing" onclick="toggleBearing()">Bearing: OFF</button>
         <button class="btn" id="btn-aruco" onclick="cmd('aruco_toggle')">ArUco: OFF</button>
         <button class="btn" onclick="cmd('rotate_ccw')">&#x21BA; CCW</button>
         <button class="btn" onclick="cmd('rotate_cw')">CW &#x21BB;</button>
+      </div>
+    </div>
+
+    <!-- Navigator state (shown only in AUTO·Camera) -->
+    <div class="card" id="nav-card">
+      <div class="card-title">Navigator</div>
+      <div class="nav-row">
+        <span id="nav-state-val">--</span>
+        <span id="nav-gate-val">Gate --</span>
+        <span id="nav-err-val"></span>
       </div>
     </div>
 
@@ -485,6 +620,8 @@ html, body {
         <span class="badge" id="bdg-ldr">LDR: --</span>
         <span class="badge" id="bdg-gps">GPS: --</span>
         <span class="badge" id="bdg-log">LOG: --</span>
+        <span class="badge" id="bdg-hdg" style="display:none">HDG: --</span>
+        <span class="badge" id="bdg-nav" style="display:none">NAV: --</span>
       </div>
     </div>
 
@@ -513,6 +650,17 @@ html, body {
     <div class="card">
       <div class="card-title">Faults</div>
       <div class="val" id="t-fault" style="font-size:1.1rem">OK</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">IMU Heading</div>
+      <div class="compass-row">
+        <canvas id="compass-canvas" width="44" height="44"></canvas>
+        <div class="hdg-detail">
+          <span id="hdg-val">---</span>
+          <span id="hdg-sub">No IMU</span>
+        </div>
+      </div>
     </div>
 
   </div><!-- /page-telem -->
@@ -593,6 +741,18 @@ html, body {
 
   </div><!-- /page-sys -->
 
+  <!-- Logs -->
+  <div class="page" id="page-logs">
+    <div id="log-toolbar">
+      <input id="log-filter" type="search" placeholder="Filter…" oninput="filterLogs()">
+      <button class="btn" id="log-autoscroll-btn" onclick="toggleAutoScroll()" style="flex:0">
+        &#x2193; Auto
+      </button>
+      <button class="btn" onclick="fetchLogs()" style="flex:0">&#x21BB;</button>
+    </div>
+    <div id="log-box"></div>
+  </div><!-- /page-logs -->
+
 </div><!-- /pages -->
 
 <!-- ESTOP bar -->
@@ -612,17 +772,143 @@ const C = {
 };
 const MODE_COLORS = { MANUAL: C.yellow, AUTO: C.green, ESTOP: C.red };
 const FIX_COLORS  = { 0: C.red, 1: C.yellow, 2: C.orange, 3: C.orange, 4: C.green, 5: C.cyan };
+const NAV_COLORS  = {
+  SEARCHING: C.yellow, ALIGNING: C.orange, APPROACHING: C.green,
+  PASSING: C.cyan, COMPLETE: C.green, ERROR: C.red, IDLE: C.gray,
+  WAITING_FIX: C.yellow, NAVIGATING: C.green, ARRIVED: C.cyan,
+};
 
 const el  = id => document.getElementById(id);
 const fmt = (v, d, u) => v == null ? '--' : v.toFixed(d) + (u ?? '');
 
+let showBearing = false;
+let lastState   = null;
+let camNatW = 640, camNatH = 480;
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+function updateLayout() {
+  const bannerH = el('no-motors-banner').style.display === 'block' ? 22 : 0;
+  const hdrH = 52, tabH = 56;
+  el('tabs').style.top  = (hdrH + bannerH) + 'px';
+  el('pages').style.top = (hdrH + tabH + bannerH) + 'px';
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   el('tab-' + name).classList.add('active');
   el('page-' + name).classList.add('active');
-  if (name === 'sys') resizeLidar();
+  if (name === 'sys')  resizeLidar();
+  if (name === 'logs') _startLogPolling();
+  else                 _stopLogPolling();
+}
+
+// ── Compass ───────────────────────────────────────────────────────────────────
+const compassCtx = el('compass-canvas').getContext('2d');
+function drawCompass(heading) {
+  const ctx = compassCtx, w = 44, h = 44, cx = w/2, cy = h/2, r = 18;
+  ctx.clearRect(0, 0, w, h);
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.strokeStyle = C.border; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.strokeStyle = C.red; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, cy-r+2); ctx.lineTo(cx, cy-r+8); ctx.stroke();
+  const rad = (heading - 90) * Math.PI / 180;
+  ctx.strokeStyle = C.cyan; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + r*Math.cos(rad), cy + r*Math.sin(rad)); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2);
+  ctx.fillStyle = C.cyan; ctx.fill();
+}
+
+// ── Bearing overlay ───────────────────────────────────────────────────────────
+const bearingCanvas = el('bearing-canvas');
+const bearingCtx    = bearingCanvas.getContext('2d');
+
+function resizeBearingCanvas() {
+  const img = el('cam-img');
+  bearingCanvas.width  = img.clientWidth  || 320;
+  bearingCanvas.height = img.clientHeight || 240;
+}
+
+function drawBearingOverlay(aruco, navGate, heading) {
+  resizeBearingCanvas();
+  const ctx = bearingCtx, W = bearingCanvas.width, H = bearingCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!aruco) return;
+  const sx = W / camNatW, sy = H / camNatH;
+  const fcx = W/2, fcy = H/2;
+  const targetOdd = navGate*2+1, targetEven = navGate*2+2;
+  ctx.font = 'bold 10px monospace';
+  for (const tag of aruco.tags) {
+    const tx = tag.cx*sx, ty = tag.cy*sy;
+    const isTarget = tag.id===targetOdd || tag.id===targetEven;
+    const color = isTarget ? C.cyan : C.yellow;
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.65; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(fcx, fcy); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(tx, ty, 4, 0, Math.PI*2);
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    let lbl = `#${tag.id}`;
+    if (tag.bearing  != null) lbl += ` ${tag.bearing >=0?'+':''}${tag.bearing.toFixed(1)}°`;
+    if (tag.distance != null) lbl += ` ${tag.distance.toFixed(2)}m`;
+    const lx = tx < fcx+W/3 ? tx+6 : tx-ctx.measureText(lbl).width-6, ly = ty-7;
+    ctx.fillStyle = 'rgba(14,14,26,.8)';
+    ctx.fillRect(lx-2, ly-11, ctx.measureText(lbl).width+4, 13);
+    ctx.fillStyle = color; ctx.fillText(lbl, lx, ly);
+  }
+  for (const gate of aruco.gates) {
+    if (gate.gate_id !== navGate) continue;
+    const gx = gate.centre_x*sx, gy = gate.centre_y*sy;
+    ctx.strokeStyle = C.green; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75;
+    ctx.beginPath(); ctx.moveTo(fcx, fcy); ctx.lineTo(gx, gy); ctx.stroke();
+    ctx.globalAlpha = 1;
+    const sz = 10;
+    ctx.strokeStyle = C.green; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(gx-sz, gy); ctx.lineTo(gx+sz, gy);
+    ctx.moveTo(gx, gy-sz); ctx.lineTo(gx, gy+sz);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(gx, gy, sz, 0, Math.PI*2); ctx.stroke();
+    let glbl = 'AIM';
+    if (gate.bearing  != null) glbl += ` ${gate.bearing >=0?'+':''}${gate.bearing.toFixed(1)}°`;
+    if (gate.distance != null) glbl += ` ${gate.distance.toFixed(2)}m`;
+    ctx.fillStyle = 'rgba(14,14,26,.8)';
+    ctx.fillRect(gx+2, gy-20, ctx.measureText(glbl).width+4, 13);
+    ctx.fillStyle = C.green; ctx.fillText(glbl, gx+4, gy-9);
+  }
+  // Boresight
+  ctx.strokeStyle = C.gray; ctx.globalAlpha = 0.45; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(fcx-10, fcy); ctx.lineTo(fcx+10, fcy);
+  ctx.moveTo(fcx, fcy-10); ctx.lineTo(fcx, fcy+10);
+  ctx.stroke(); ctx.globalAlpha = 1;
+  // Mini compass arc
+  if (heading != null) {
+    const ccx = W/2, ccy = H-20, cr = 13;
+    ctx.fillStyle = 'rgba(14,14,26,.8)';
+    ctx.beginPath(); ctx.arc(ccx, ccy, cr+2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ccx, ccy, cr, 0, Math.PI*2);
+    ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = C.red; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ccx, ccy-cr+2); ctx.lineTo(ccx, ccy-cr+6); ctx.stroke();
+    const nrad = (heading-90)*Math.PI/180;
+    ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ccx, ccy);
+    ctx.lineTo(ccx+cr*Math.cos(nrad), ccy+cr*Math.sin(nrad)); ctx.stroke();
+    ctx.font = '9px monospace'; ctx.fillStyle = C.cyan; ctx.textAlign = 'center';
+    ctx.fillText(heading.toFixed(0)+'°', ccx, ccy-cr-3);
+    ctx.textAlign = 'left';
+  }
+}
+
+function toggleBearing() {
+  showBearing = !showBearing;
+  const btn = el('btn-bearing');
+  btn.textContent = showBearing ? 'Bearing: ON' : 'Bearing: OFF';
+  btn.className   = showBearing ? 'btn on' : 'btn';
+  el('bearing-canvas').style.display = showBearing ? 'block' : 'none';
+  if (!showBearing) bearingCtx.clearRect(0, 0, bearingCanvas.width, bearingCanvas.height);
+  if (lastState) applyState(lastState);
 }
 
 // ── Motor bars ────────────────────────────────────────────────────────────────
@@ -723,6 +1009,13 @@ function drawLidar(angles, distances) {
 
 // ── Apply state ───────────────────────────────────────────────────────────────
 function applyState(s) {
+  lastState = s;
+
+  // No-motors banner
+  const banner = el('no-motors-banner');
+  banner.style.display = s.no_motors ? 'block' : 'none';
+  updateLayout();
+
   // Header
   const mc = MODE_COLORS[s.mode] || C.gray;
   const mEl = el('h-mode');
@@ -740,8 +1033,8 @@ function applyState(s) {
   motorBar('fill-r', 'val-r', s.drive.right);
 
   // Camera
-  el('cam-img').style.display = s.camera_ok ? 'block' : 'none';
-  el('cam-no').style.display  = s.camera_ok ? 'none'  : 'flex';
+  el('cam-img').style.display  = s.camera_ok ? 'block' : 'none';
+  el('cam-no').style.display   = s.camera_ok ? 'none'  : 'flex';
   el('cam-rot-lbl').textContent = s.cam_rotation ? `[${s.cam_rotation}°]` : '';
 
   // ArUco button
@@ -756,15 +1049,68 @@ function applyState(s) {
     aBtn.classList.remove('on');
   }
 
+  // Bearing overlay
+  el('bearing-canvas').style.display = (showBearing && s.aruco_enabled) ? 'block' : 'none';
+  if (showBearing && s.aruco_enabled)
+    drawBearingOverlay(s.aruco, s.nav_gate, s.telemetry.heading);
+
+  // Nav badge on camera + nav card
+  const autoCamera = s.mode === 'AUTO' && (s.auto_type === 'Camera' || s.auto_type === 'Cam+GPS');
+  const autoGps    = s.mode === 'AUTO' && (s.auto_type === 'GPS'     || s.auto_type === 'Cam+GPS');
+  const navBadge   = el('nav-badge-cam');
+  const navCard    = el('nav-card');
+  if ((autoCamera || autoGps) && s.nav_state && s.nav_state !== 'IDLE') {
+    const nc = NAV_COLORS[s.nav_state] || C.gray;
+    let ntxt, gateOrWp, errTxt;
+    if (autoGps) {
+      ntxt = `GPS:${s.nav_state}  WP:${s.nav_wp}`;
+      if (s.nav_wp_dist != null) ntxt += `  ${s.nav_wp_dist.toFixed(1)}m`;
+      if (s.nav_wp_bear != null) ntxt += `  ${s.nav_wp_bear.toFixed(0)}°`;
+      gateOrWp = `WP ${s.nav_wp}`;
+      errTxt = s.nav_wp_dist != null ? `${s.nav_wp_dist.toFixed(1)}m` : '';
+    } else {
+      ntxt = `${s.nav_state}  G${s.nav_gate}`;
+      if (s.nav_bearing_err != null)
+        ntxt += `  ${s.nav_bearing_err >= 0 ? '+' : ''}${s.nav_bearing_err.toFixed(1)}°`;
+      gateOrWp = `Gate ${s.nav_gate}`;
+      errTxt = s.nav_bearing_err != null
+        ? `${s.nav_bearing_err >= 0 ? '+' : ''}${s.nav_bearing_err.toFixed(1)}°` : '';
+    }
+    navBadge.textContent = ntxt; navBadge.style.color = nc; navBadge.style.display = 'block';
+    navCard.style.display = 'block';
+    el('nav-state-val').textContent = s.nav_state; el('nav-state-val').style.color = nc;
+    el('nav-gate-val').textContent  = gateOrWp;
+    el('nav-err-val').textContent   = errTxt;
+    el('nav-err-val').style.color   = C.cyan;
+  } else {
+    navBadge.style.display = 'none';
+    navCard.style.display  = 'none';
+  }
+
   // Telemetry
   const t = s.telemetry;
-  el('t-volt').textContent  = fmt(t.voltage,   1, ' V');
-  el('t-curr').textContent  = fmt(t.current,   2, ' A');
+  el('t-volt').textContent  = fmt(t.voltage,    1, ' V');
+  el('t-curr').textContent  = fmt(t.current,    2, ' A');
   el('t-board').textContent = fmt(t.board_temp, 0, '°C');
   el('t-ltmp').textContent  = fmt(t.left_temp,  0, '°C');
   el('t-rtmp').textContent  = fmt(t.right_temp, 0, '°C');
   const fEl = el('t-fault');
   const faulted = t.left_fault || t.right_fault;
+  fEl.textContent = (t.left_fault ? 'FAULT-L ' : '') + (t.right_fault ? 'FAULT-R' : '') || 'OK';
+  fEl.style.color = faulted ? C.red : C.green;
+
+  // IMU heading
+  const hdgVal = el('hdg-val'), hdgSub = el('hdg-sub');
+  if (t.heading != null) {
+    hdgVal.textContent = t.heading.toFixed(1) + '°'; hdgVal.style.color = C.cyan;
+    hdgSub.textContent = 'IMU OK'; hdgSub.style.color = C.gray;
+    drawCompass(t.heading);
+    el('compass-canvas').style.opacity = '1';
+  } else {
+    hdgVal.textContent = '---'; hdgVal.style.color = C.gray;
+    hdgSub.textContent = 'No IMU'; hdgSub.style.color = C.gray;
+    el('compass-canvas').style.opacity = '0.25';
+  }
   fEl.textContent = (t.left_fault ? 'FAULT-L ' : '') + (t.right_fault ? 'FAULT-R' : '') || 'OK';
   fEl.style.color = faulted ? C.red : C.green;
 
@@ -820,6 +1166,25 @@ function applyState(s) {
   badge('bdg-gps', 'GPS: ' + (gOk ? g.fix_quality_name : '--'),
         gOk ? (g.fix_quality >= 4 ? 'ok' : 'warn') : '');
   badge('bdg-log', 'LOG: ' + (s.gps_logging ? 'ON' : 'OFF'), s.gps_logging ? 'ok' : '');
+
+  const hdgBadge = el('bdg-hdg');
+  if (t.heading != null) {
+    hdgBadge.textContent = `HDG: ${t.heading.toFixed(1)}°`;
+    hdgBadge.className   = 'badge info';
+    hdgBadge.style.display = 'inline';
+  } else { hdgBadge.style.display = 'none'; }
+
+  const navBdg = el('bdg-nav');
+  if (s.nav_state && s.nav_state !== 'IDLE') {
+    const nc = NAV_COLORS[s.nav_state] || C.gray;
+    const navTxt = autoGps
+      ? `GPS: ${s.nav_state} WP${s.nav_wp}${s.nav_wp_dist != null ? '  '+s.nav_wp_dist.toFixed(1)+'m' : ''}`
+      : `NAV: ${s.nav_state} G${s.nav_gate}`;
+    navBdg.textContent       = navTxt;
+    navBdg.style.borderColor = nc;
+    navBdg.style.color       = nc;
+    navBdg.style.display     = 'inline';
+  } else { navBdg.style.display = 'none'; }
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -854,8 +1219,70 @@ function connect() {
   };
 }
 
+// ── Log viewer ────────────────────────────────────────────────────────────────
+let _logAutoScroll = true;
+let _logLines      = [];
+let _logInterval   = null;
+
+function toggleAutoScroll() {
+  _logAutoScroll = !_logAutoScroll;
+  const btn = el('log-autoscroll-btn');
+  btn.classList.toggle('on', _logAutoScroll);
+  btn.textContent = _logAutoScroll ? '↓ Auto' : '↓ Manual';
+}
+
+function _levelClass(line) {
+  if (/\bCRITICAL\b/.test(line)) return 'critical';
+  if (/\bERROR\b/.test(line))    return 'error';
+  if (/\bWARNING\b/.test(line))  return 'warning';
+  if (/\bDEBUG\b/.test(line))    return 'debug';
+  return 'info';
+}
+
+function filterLogs() {
+  const q = el('log-filter').value.toLowerCase();
+  const box = el('log-box');
+  for (const div of box.children) {
+    div.style.display = (!q || div.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  }
+}
+
+async function fetchLogs() {
+  try {
+    const resp = await fetch('/api/logs?n=200');
+    const data = await resp.json();
+    _logLines = data.lines || [];
+    const box  = el('log-box');
+    const q    = el('log-filter').value.toLowerCase();
+    box.innerHTML = '';
+    for (const line of _logLines) {
+      const div = document.createElement('div');
+      div.className = 'log-line ' + _levelClass(line);
+      div.textContent = line;
+      if (q && !line.toLowerCase().includes(q)) div.style.display = 'none';
+      box.appendChild(div);
+    }
+    if (_logAutoScroll) box.scrollTop = box.scrollHeight;
+  } catch(e) { /* server not ready */ }
+}
+
+function _startLogPolling() {
+  if (_logInterval) return;
+  fetchLogs();
+  _logInterval = setInterval(fetchLogs, 2000);
+}
+
+function _stopLogPolling() {
+  if (_logInterval) { clearInterval(_logInterval); _logInterval = null; }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
-window.addEventListener('resize', resizeLidar);
+el('cam-img').addEventListener('load', function() {
+  if (this.naturalWidth)  camNatW = this.naturalWidth;
+  if (this.naturalHeight) camNatH = this.naturalHeight;
+});
+window.addEventListener('resize', () => { resizeLidar(); resizeBearingCanvas(); });
+updateLayout();
 resizeLidar();
 connect();
 </script>
@@ -904,10 +1331,13 @@ def main():
     parser.add_argument('--no-camera',       action='store_true', default=False)
     parser.add_argument('--no-lidar',        action='store_true', default=False)
     parser.add_argument('--no-gps',          action='store_true', default=False)
+    parser.add_argument('--no-motors',       action='store_true', default=False,
+                        help='Suppress all motor/LED/bearing commands (bench test mode)')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO,
-                        format='%(levelname)s %(name)s: %(message)s')
+    global _log_path
+    _log_path = setup_logging()
+    log.info(f"Log file: {_log_path}")
     cfg = _load_config(args.config)
 
     web_host = args.host or _cfg(cfg, 'mobile', 'host', '0.0.0.0')
@@ -944,6 +1374,8 @@ def main():
         cam_rotation    = _cfg(cfg, 'camera', 'rotation', 0,   int),
         enable_aruco    = _cfg(cfg, 'aruco',  'enabled', False, bool_val),
         aruco_dict      = _cfg(cfg, 'aruco',  'dict',    'DICT_4X4_1000'),
+        aruco_calib     = _cfg(cfg, 'aruco',  'calib_file', ''),
+        aruco_tag_size  = _cfg(cfg, 'aruco',  'tag_size',   0.15, float),
         throttle_ch     = _cfg(cfg, 'rc', 'throttle_ch',  3,    int),
         steer_ch        = _cfg(cfg, 'rc', 'steer_ch',     1,    int),
         mode_ch         = _cfg(cfg, 'rc', 'mode_ch',      5,    int),
@@ -957,6 +1389,7 @@ def main():
         failsafe_s      = _cfg(cfg, 'rc', 'failsafe_s',  0.5,  float),
         speed_min       = _cfg(cfg, 'rc', 'speed_min',   0.25, float),
         control_hz      = _cfg(cfg, 'rc', 'control_hz',  50,   int),
+        no_motors       = args.no_motors,
     )
 
     _robot.start()

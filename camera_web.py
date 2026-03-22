@@ -27,7 +27,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 from picamera2 import Picamera2
 
-from aruco_detector import ArucoDetector, ArUcoState, ARUCO_DICT
+from robot.aruco_detector import ArucoDetector, ArUcoState, ARUCO_DICT
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 

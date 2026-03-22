@@ -30,7 +30,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_LEFT`     | 2    | Motor speed byte (see below) |
 | `CMD_RIGHT`    | 3    | Motor speed byte |
 | `CMD_KILL`     | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`   | 5    | Ignored — device replies with 7 sensor data packets then ACK |
+| `CMD_SENSOR`   | 5    | Ignored — device replies with 8 sensor data packets then ACK |
 | `CMD_BEARING`  | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
 
 ---
@@ -71,28 +71,29 @@ While bearing hold is active:
 
 Encode on host: `value = round(degrees × 254 / 359)`, clamped to 0–254.
 
-**PID tuning constants** (in `main.py`):
+**Tuning constant** (in `yukon_firmware_and_software/main.py`):
 
-| Constant   | Default | Effect |
-|------------|---------|--------|
-| `PID_KP`   | 0.6     | Proportional gain — increase for snappier correction |
-| `PID_KD`   | 0.08    | Derivative gain — increase to dampen oscillation |
-| `PID_MAX`  | 0.4     | Maximum correction fraction (limits differential) |
+| Constant     | Default | Effect |
+|--------------|---------|--------|
+| `BEARING_KP` | 0.4     | Proportional gain — tune up if robot drifts, down if it oscillates |
+
+Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped to `±BEARING_KP`.
 
 ---
 
 ## Sensor response (Device → Host)
 
-`CMD_SENSOR` triggers 7 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
+`CMD_SENSOR` triggers 8 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
 
-| ID | Name             | Scale factor   | Unit |
-|----|------------------|----------------|------|
-| 0  | Voltage          | raw ÷ 10       | V    |
-| 1  | Current          | raw ÷ 100      | A    |
-| 2  | Board temp       | raw ÷ 3        | °C   |
-| 3  | Left module temp | raw ÷ 3        | °C   |
-| 4  | Right module temp| raw ÷ 3        | °C   |
-| 5  | Left fault       | 1.0 (raw = 0/1)| —    |
-| 6  | Right fault      | 1.0 (raw = 0/1)| —    |
+| ID | Name              | Scale factor    | Unit |
+|----|-------------------|-----------------|------|
+| 0  | Voltage           | raw ÷ 10        | V    |
+| 1  | Current           | raw ÷ 100       | A    |
+| 2  | Board temp        | raw ÷ 3         | °C   |
+| 3  | Left module temp  | raw ÷ 3         | °C   |
+| 4  | Right module temp | raw ÷ 3         | °C   |
+| 5  | Left fault        | 1.0 (raw = 0/1) | —    |
+| 6  | Right fault       | 1.0 (raw = 0/1) | —    |
+| 7  | IMU heading       | same as `CMD_BEARING`; 255 = IMU absent | ° |
 
-`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x36`).
+`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x37`).

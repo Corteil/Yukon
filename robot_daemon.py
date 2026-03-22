@@ -46,6 +46,21 @@ from typing import List, Optional
 
 log = logging.getLogger(__name__)
 
+# Navigator imports are deferred to avoid hard dependency when not used
+try:
+    from robot.aruco_navigator import ArucoNavigator, NavState
+    _NAVIGATOR_AVAILABLE = True
+except ImportError:
+    _NAVIGATOR_AVAILABLE = False
+    log.debug("aruco_navigator not found — camera auto mode disabled")
+
+try:
+    from robot.gps_navigator import GpsNavigator, GpsNavState
+    _GPS_NAVIGATOR_AVAILABLE = True
+except ImportError:
+    _GPS_NAVIGATOR_AVAILABLE = False
+    log.debug("gps_navigator not found — GPS auto mode disabled")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Mode
@@ -79,14 +94,15 @@ class DriveState:
 
 @dataclass
 class Telemetry:
-    voltage:     float = 0.0
-    current:     float = 0.0
-    board_temp:  float = 0.0
-    left_temp:   float = 0.0
-    right_temp:  float = 0.0
-    left_fault:  bool  = False
-    right_fault: bool  = False
-    timestamp:   float = 0.0
+    voltage:     float          = 0.0
+    current:     float          = 0.0
+    board_temp:  float          = 0.0
+    left_temp:   float          = 0.0
+    right_temp:  float          = 0.0
+    left_fault:  bool           = False
+    right_fault: bool           = False
+    heading:     Optional[float] = None   # IMU heading in degrees (None = IMU absent)
+    timestamp:   float          = 0.0
 
 
 @dataclass
@@ -143,6 +159,13 @@ class RobotState:
     aruco_ok:    bool        = False
     gps_logging: bool        = False
     speed_scale: float       = 0.25   # current speed limit scale (0.0–1.0)
+    nav_state:   str         = "IDLE" # Navigator state name
+    nav_gate:    int         = 0      # ArUco target gate index
+    nav_wp:      int         = 0      # GPS target waypoint index
+    nav_wp_dist:     Optional[float] = None  # metres to current GPS waypoint
+    nav_wp_bear:     Optional[float] = None  # bearing to current GPS waypoint
+    nav_bearing_err: Optional[float] = None  # ArUco navigator bearing error (degrees)
+    no_motors:       bool        = False  # drive commands suppressed
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -169,10 +192,11 @@ class _YukonLink:
     CMD_SENSOR  = 5
     CMD_BEARING = 6   # value: 0–254 = target bearing (0–359°), 255 = disable hold
 
-    RESP_IDS = range(7)   # 0..6
+    RESP_IDS = range(8)   # 0..7  (7 = heading)
 
-    def __init__(self, port: str, baud: int = 115200):
+    def __init__(self, port: str, baud: int = 115200, no_motors: bool = False):
         import serial
+        self._no_motors = no_motors
         self._ser      = serial.Serial(port, baud, timeout=0.1, dsrdtr=False)
         time.sleep(0.5)
         self._ser.reset_input_buffer()
@@ -182,6 +206,8 @@ class _YukonLink:
         self._stop      = threading.Event()
         self._rx = threading.Thread(target=self._reader, daemon=True, name="yukon_rx")
         self._rx.start()
+        if no_motors:
+            log.warning("NO-MOTORS mode: all drive/LED/bearing commands suppressed")
 
     # ── background reader ────────────────────────────────────────────────────
 
@@ -221,7 +247,7 @@ class _YukonLink:
                 if len(pkt) == 5:
                     in_pkt = False
                     rtype, v_high, v_low, chk = pkt[1], pkt[2], pkt[3], pkt[4]
-                    if (0x30 <= rtype <= 0x36 and
+                    if (0x30 <= rtype <= 0x37 and
                             0x40 <= v_high <= 0x4F and
                             0x50 <= v_low  <= 0x5F and
                             chk == (rtype ^ v_high ^ v_low)):
@@ -233,6 +259,9 @@ class _YukonLink:
     @staticmethod
     def _parse_sensor(packets) -> Telemetry:
         raw = {resp_id: value for resp_id, value in packets}
+        # Heading: encoded as value * 254/359; 255 = IMU not available
+        hdg_raw = raw.get(7, 255)
+        heading = None if hdg_raw == 255 else round(hdg_raw * 359.0 / 254.0, 1)
         return Telemetry(
             voltage     = raw.get(0, 0) / 10.0,
             current     = raw.get(1, 0) / 100.0,
@@ -241,6 +270,7 @@ class _YukonLink:
             right_temp  = raw.get(4, 0) / 3.0,
             left_fault  = bool(raw.get(5, 0)),
             right_fault = bool(raw.get(6, 0)),
+            heading     = heading,
             timestamp   = time.monotonic(),
         )
 
@@ -271,6 +301,8 @@ class _YukonLink:
 
     def drive(self, left: float, right: float):
         """Send left+right motor speeds in one write. Thread-safe."""
+        if self._no_motors:
+            return
         pkt = (self._encode(self.CMD_LEFT,  self._speed_byte(left)) +
                self._encode(self.CMD_RIGHT, self._speed_byte(right)))
         with self._cmd_lock:
@@ -278,16 +310,22 @@ class _YukonLink:
             self._drain(2)
 
     def set_led_a(self, on: bool):
+        if self._no_motors:
+            return
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_LED, 1 if on else 0))
             self._drain(1)
 
     def set_led_b(self, on: bool):
+        if self._no_motors:
+            return
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_LED, 3 if on else 2))
             self._drain(1)
 
     def kill(self):
+        if self._no_motors:
+            return
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_KILL, 0))
             self._drain(1, timeout=0.5)
@@ -299,6 +337,8 @@ class _YukonLink:
 
     def set_bearing(self, degrees: float):
         """Enable bearing hold. Yukon PID will steer toward this heading."""
+        if self._no_motors:
+            return
         degrees = degrees % 360.0
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_BEARING, self._bearing_byte(degrees)))
@@ -306,6 +346,8 @@ class _YukonLink:
 
     def clear_bearing(self):
         """Disable bearing hold. Direct CMD_LEFT/CMD_RIGHT control resumes."""
+        if self._no_motors:
+            return
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_BEARING, 255))
             self._drain(1)
@@ -352,13 +394,17 @@ class _Camera:
     def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
                  rotation: int = 0,
                  enable_aruco: bool = False,
-                 aruco_dict:   str  = "DICT_4X4_1000"):
-        self._w            = width
-        self._h            = height
-        self._fps          = fps
-        self._rotation     = rotation
-        self._aruco_dict   = aruco_dict
-        self._aruco_enabled = enable_aruco   # runtime toggle flag
+                 aruco_dict:   str  = "DICT_4X4_1000",
+                 calib_file:   str  = None,
+                 tag_size:     float = 0.15):
+        self._w             = width
+        self._h             = height
+        self._fps           = fps
+        self._rotation      = rotation
+        self._aruco_dict    = aruco_dict
+        self._calib_file    = calib_file
+        self._tag_size      = tag_size
+        self._aruco_enabled = enable_aruco
         self._frame        = None
         self._aruco_state  = None   # ArUcoState or None
         self._lock         = threading.Lock()
@@ -391,9 +437,25 @@ class _Camera:
     def _make_detector(self):
         """Initialise the ArucoDetector; return None on failure."""
         try:
-            from aruco_detector import ArucoDetector
-            det = ArucoDetector(self._aruco_dict)
-            log.info(f"ArUco detector ready ({self._aruco_dict})")
+            from robot.aruco_detector import ArucoDetector
+            # Substitute {width}/{height} placeholders so robot.ini can use
+            # a template like camera_cal_{width}x{height}.npz and the right
+            # file is selected automatically for the configured resolution.
+            calib = (self._calib_file
+                     .replace('{width}',  str(self._w))
+                     .replace('{height}', str(self._h))
+                     ) if self._calib_file else None
+            if calib and not os.path.exists(calib):
+                log.warning(f"Calibration file not found: {calib} — pose estimation disabled. "
+                            f"Run tools/derive_calibrations.py to generate it.")
+                calib = None
+            det = ArucoDetector(
+                dict_name  = self._aruco_dict,
+                calib_file = calib,
+                tag_size   = self._tag_size,
+            )
+            log.info(f"ArUco detector ready ({self._aruco_dict}"
+                     f"{f', calibrated ({calib})' if calib else ''})")
             return det
         except Exception as e:
             log.warning(f"ArUco detector init failed: {e}")
@@ -409,6 +471,9 @@ class _Camera:
         cam.start()
         self._ok = True
         detector = self._make_detector()
+        _last_aruco_err = None
+        period   = 1.0 / self._fps
+        deadline = time.monotonic() + period
         try:
             while not self._stop.is_set():
                 frame = cam.capture_array()[:, :, ::-1]  # BGR → RGB
@@ -417,13 +482,22 @@ class _Camera:
                 if detector is not None and self._aruco_enabled:
                     try:
                         aruco_state = detector.detect(frame)
+                        _last_aruco_err = None
                     except Exception as e:
-                        log.debug(f"ArUco detect error: {e}")
+                        msg = str(e)
+                        if msg != _last_aruco_err:
+                            log.warning(f"ArUco detect error: {e}")
+                            _last_aruco_err = msg
                 with self._lock:
                     self._frame       = frame
                     self._aruco_state = aruco_state
                     self._aruco_ok    = aruco_state is not None
-                time.sleep(1.0 / self._fps)
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                else:
+                    deadline = time.monotonic()  # fell behind — reset, don't catch up
+                deadline += period
         finally:
             cam.stop()
             self._ok       = False
@@ -439,6 +513,7 @@ class _Camera:
             raise RuntimeError("No camera found")
         self._ok = True
         detector = self._make_detector()
+        _last_aruco_err = None
         try:
             while not self._stop.is_set():
                 ret, frame = cap.read()
@@ -449,8 +524,12 @@ class _Camera:
                     if detector is not None and self._aruco_enabled:
                         try:
                             aruco_state = detector.detect(frame)
+                            _last_aruco_err = None
                         except Exception as e:
-                            log.debug(f"ArUco detect error: {e}")
+                            msg = str(e)
+                            if msg != _last_aruco_err:
+                                log.warning(f"ArUco detect error: {e}")
+                                _last_aruco_err = msg
                     with self._lock:
                         self._frame       = frame
                         self._aruco_state = aruco_state
@@ -510,7 +589,7 @@ class _Lidar:
     """Thin wrapper around LD06 that matches the rest of robot.py's subsystem API."""
 
     def __init__(self, port: str = '/dev/ttyUSB0'):
-        from ld06 import LD06
+        from drivers.ld06 import LD06
         self._driver = LD06(port)
 
     def start(self):
@@ -842,6 +921,8 @@ class Robot:
         cam_rotation:   int   = 0,
         enable_aruco:   bool  = False,
         aruco_dict:     str   = "DICT_4X4_1000",
+        aruco_calib:    str   = '',        # path to camera_cal.npz
+        aruco_tag_size: float = 0.15,      # physical tag side length in metres
         throttle_ch:    int   = 3,
         steer_ch:       int   = 1,
         mode_ch:        int   = 5,
@@ -855,6 +936,7 @@ class Robot:
         failsafe_s:     float = 0.5,
         speed_min:      float = 0.25,
         control_hz:     int   = 50,
+        no_motors:      bool  = False,  # suppress all drive commands (bench testing)
     ):
         self._ibus_port      = ibus_port
         self._yukon_port     = yukon_port or self._find_yukon()
@@ -874,6 +956,8 @@ class Robot:
         self._cam_rotation   = cam_rotation
         self._enable_aruco   = enable_aruco
         self._aruco_dict     = aruco_dict
+        self._aruco_calib    = aruco_calib.strip() or None
+        self._aruco_tag_size = aruco_tag_size
         # RC tuning (convert to 0-based channel indices)
         self._ch_throttle   = throttle_ch   - 1
         self._ch_steer      = steer_ch      - 1
@@ -889,13 +973,16 @@ class Robot:
         self._failsafe_s  = failsafe_s
         self._speed_min   = speed_min
         self._control_hz  = control_hz
+        self._no_motors   = no_motors
 
         # Subsystems (created in start())
-        self._yukon:  Optional[_YukonLink] = None
-        self._camera: Optional[_Camera]    = None
-        self._lidar:  Optional[_Lidar]     = None
-        self._gps:    Optional[_Gps]       = None
-        self._system: _System              = _System()
+        self._yukon:         Optional[_YukonLink] = None
+        self._camera:        Optional[_Camera]    = None
+        self._lidar:         Optional[_Lidar]     = None
+        self._gps:           Optional[_Gps]       = None
+        self._system:        _System              = _System()
+        self._navigator:     Optional[object]     = None  # ArucoNavigator when available
+        self._gps_navigator: Optional[object]     = None  # GpsNavigator when available
 
         # Shared state
         self._mode_lock   = threading.Lock()
@@ -919,8 +1006,15 @@ class Robot:
 
     def start(self):
         """Start all subsystems and control threads."""
-        log.info(f"Connecting to Yukon on {self._yukon_port}")
-        self._yukon = _YukonLink(self._yukon_port)
+        suffix = " [NO-MOTORS]" if self._no_motors else ""
+        while True:
+            try:
+                log.info(f"Connecting to Yukon on {self._yukon_port}{suffix}")
+                self._yukon = _YukonLink(self._yukon_port, no_motors=self._no_motors)
+                break
+            except Exception as e:
+                log.warning(f"Yukon not available on {self._yukon_port} ({e}) — retrying in 3 s")
+                time.sleep(3)
 
         if self._enable['camera']:
             self._camera = _Camera(
@@ -930,8 +1024,22 @@ class Robot:
                 rotation     = self._cam_rotation,
                 enable_aruco = self._enable_aruco,
                 aruco_dict   = self._aruco_dict,
+                calib_file   = self._aruco_calib,
+                tag_size     = self._aruco_tag_size,
             )
             self._camera.start()
+
+        if _NAVIGATOR_AVAILABLE:
+            self._navigator = ArucoNavigator.from_ini(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "robot.ini")
+            )
+            log.info("ArucoNavigator ready")
+
+        if _GPS_NAVIGATOR_AVAILABLE:
+            self._gps_navigator = GpsNavigator.from_ini(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "robot.ini")
+            )
+            log.info("GpsNavigator ready")
 
         if self._enable['lidar']:
             self._lidar = _Lidar(self._lidar_port)
@@ -991,7 +1099,7 @@ class Robot:
         """Clear ESTOP and return to MANUAL."""
         with self._mode_lock:
             self._mode = RobotMode.MANUAL
-        log.info("ESTOP cleared → MANUAL")
+        log.info("ESTOP cleared → MANUAL (re-engage AUTO switch to restart navigator)")
 
     # ── drive API (autonomous mode) ──────────────────────────────────────────
 
@@ -1028,7 +1136,25 @@ class Robot:
             gps_ok    = bool(self._gps    and self._gps.ok),
             aruco_ok    = bool(self._camera and self._camera.aruco_ok),
             gps_logging = self._gps_logging,
+            nav_state   = (self._navigator.state.name     if self._navigator
+                           else self._gps_navigator.state.name if self._gps_navigator
+                           else "IDLE"),
+            nav_gate    = self._navigator.gate_id    if self._navigator else 0,
+            nav_wp          = self._gps_navigator.waypoint_index if self._gps_navigator else 0,
+            nav_wp_dist     = self._gps_navigator.distance_to_wp if self._gps_navigator else None,
+            nav_wp_bear     = self._gps_navigator.bearing_to_wp  if self._gps_navigator else None,
+            nav_bearing_err = self._navigator.bearing_err        if self._navigator     else None,
+            no_motors       = self._no_motors,
         )
+
+    def get_heading(self) -> Optional[float]:
+        """Return latest IMU heading in degrees from Yukon telemetry, or None."""
+        with self._mode_lock:
+            return self._telemetry.heading
+
+    def get_gps_navigator(self):
+        """Return the GpsNavigator instance, or None if unavailable."""
+        return self._gps_navigator
 
     def get_frame(self):
         """Return latest camera frame (numpy array, RGB) or None."""
@@ -1075,7 +1201,7 @@ class Robot:
 
     def _rc_thread(self):
         """Read iBUS packets and update RC state."""
-        from ibus import IBusReader, IBusError
+        from drivers.ibus import IBusReader, IBusError
         while not self._stop_evt.is_set():
             try:
                 with IBusReader(self._ibus_port) as ibus:
@@ -1093,12 +1219,41 @@ class Robot:
                 log.warning(f"iBUS error: {e} — retrying in 2 s")
                 time.sleep(2.0)
 
+    def _reconnect_yukon(self):
+        """Close the dead Yukon link and reconnect in a background thread."""
+        try:
+            if self._yukon:
+                self._yukon.close()
+        except Exception:
+            pass
+        self._yukon = None
+        log.warning("Yukon disconnected — reconnecting…")
+
+        def _retry():
+            while not self._stop_evt.is_set():
+                try:
+                    link = _YukonLink(self._yukon_port, no_motors=self._no_motors)
+                    self._yukon = link
+                    log.info("Yukon reconnected.")
+                    return
+                except Exception as e:
+                    log.warning(f"Yukon not available ({e}) — retrying in 3 s")
+                    self._stop_evt.wait(3)
+
+        threading.Thread(target=_retry, daemon=True, name="yukon_reconnect").start()
+
     def _telemetry_thread(self):
         """Poll Yukon sensors and trigger ESTOP on fault."""
+        import serial as _serial
         interval = 1.0 / _TELEMETRY_HZ   # sensor poll is fixed at 1 Hz
         while not self._stop_evt.is_set():
             if self._yukon:
-                result = self._yukon.query_sensor()
+                try:
+                    result = self._yukon.query_sensor()
+                except (_serial.SerialException, OSError):
+                    self._reconnect_yukon()
+                    self._stop_evt.wait(interval)
+                    continue
                 if result:
                     with self._mode_lock:
                         self._telemetry = result
@@ -1110,6 +1265,7 @@ class Robot:
 
     def _control_thread(self):
         """Control loop: apply motor speeds based on current mode."""
+        import serial as _serial
         dt        = 1.0 / self._control_hz
         last_left  = None
         last_right = None
@@ -1180,6 +1336,12 @@ class Robot:
                 if last_left != 0.0 or last_right != 0.0:
                     self._yukon.kill()
                     last_left = last_right = 0.0
+                if last_mode is not RobotMode.ESTOP:
+                    if self._navigator:
+                        self._navigator.stop()
+                    if self._gps_navigator:
+                        self._gps_navigator.stop()
+                    last_mode = RobotMode.ESTOP
                 # Skip normal drive() call
                 elapsed = time.monotonic() - t0
                 self._stop_evt.wait(max(0.0, dt - elapsed))
@@ -1196,18 +1358,65 @@ class Robot:
                     if ch[self._ch_mode] > 1500:
                         with self._mode_lock:
                             self._mode = RobotMode.AUTO
+                        if (self._navigator and
+                                self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)):
+                            self._navigator.start()
+                        if (self._gps_navigator and
+                                self._auto_type in (AutoType.GPS, AutoType.CAMERA_GPS)):
+                            self._gps_navigator.start()
                         log.info("RC → AUTO")
 
             else:  # AUTO
-                left, right = auto_left, auto_right
+                # ── Camera autonomous: feed ArUco state + IMU heading ─────────
+                if (self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)
+                        and self._navigator is not None
+                        and self._camera is not None):
+                    aruco_state = self._camera.get_aruco_state()
+                    with self._mode_lock:
+                        heading = self._telemetry.heading
+                    if aruco_state is not None:
+                        nav_left, nav_right = self._navigator.update(
+                            aruco_state, self._cam_width,
+                            heading   = heading,
+                            yukon     = self._yukon,
+                        )
+                        self.drive(nav_left, nav_right)
+                    left, right = self._auto_left, self._auto_right
+
+                # ── GPS autonomous: feed GPS state + IMU heading ──────────────
+                elif (self._auto_type in (AutoType.GPS, AutoType.CAMERA_GPS)
+                        and self._gps_navigator is not None
+                        and self._gps is not None):
+                    gps_state = self._gps.get_state()
+                    with self._mode_lock:
+                        heading = self._telemetry.heading
+                    gps_left, gps_right = self._gps_navigator.update(
+                        gps_state,
+                        imu_heading = heading,
+                        yukon       = self._yukon,
+                    )
+                    self.drive(gps_left, gps_right)
+                    left, right = self._auto_left, self._auto_right
+
+                else:
+                    left, right = auto_left, auto_right
+
                 # RC failsafe in AUTO: if signal lost, ESTOP
                 if not self._rc_active:
                     with self._mode_lock:
                         self._mode = RobotMode.ESTOP
+                    if self._navigator:
+                        self._navigator.stop()
+                    if self._gps_navigator:
+                        self._gps_navigator.stop()
                     log.warning("RC signal lost in AUTO — ESTOP")
                     continue
                 # RC override: switch back to manual
                 if self._rc_channels[self._ch_mode] <= 1500:
+                    if self._navigator:
+                        self._navigator.stop()
+                    if self._gps_navigator:
+                        self._gps_navigator.stop()
                     with self._mode_lock:
                         self._mode = RobotMode.MANUAL
                     log.info("RC → MANUAL")
@@ -1222,7 +1431,10 @@ class Robot:
             left_b  = round(left  * 100)
             right_b = round(right * 100)
             if left_b != last_left or right_b != last_right:
-                self._yukon.drive(left, right)
+                try:
+                    self._yukon.drive(left, right)
+                except (_serial.SerialException, OSError):
+                    self._reconnect_yukon()
                 last_left, last_right = left_b, right_b
 
             with self._mode_lock:
@@ -1321,6 +1533,47 @@ class Robot:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Logging setup (used by robot_gui.py, robot_web.py, robot_mobile.py)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def setup_logging(log_dir: str = None) -> str:
+    """
+    Configure root logger with a console handler and a rotating file handler.
+
+    Parameters
+    ----------
+    log_dir : directory for the log file.  Defaults to ``logs/`` next to
+              this file.  Created automatically if it does not exist.
+
+    Returns the absolute path of the log file.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    if log_dir is None:
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, 'robot.log')
+
+    fmt_file    = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+    fmt_console = logging.Formatter('%(levelname)s %(name)s: %(message)s')
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Console
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt_console)
+    root.addHandler(sh)
+
+    # Rotating file — 5 MB × 3 files
+    fh = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=3)
+    fh.setFormatter(fmt_file)
+    root.addHandler(fh)
+
+    return log_path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # CLI demo
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1365,6 +1618,8 @@ def main():
     parser.add_argument("--no-camera",       action="store_true", default=None)
     parser.add_argument("--no-lidar",        action="store_true", default=None)
     parser.add_argument("--no-gps",          action="store_true", default=None)
+    parser.add_argument("--no-motors",       action="store_true", default=False,
+                        help="Suppress all motor/LED/bearing commands (bench test mode)")
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
@@ -1375,7 +1630,8 @@ def main():
             return cli_val
         return _cfg(cfg, section, key, fallback, cast)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    log_path = setup_logging()
+    log.info(f"Log file: {log_path}")
     log.info(f"Config: {args.config}")
 
     robot = Robot(
@@ -1398,8 +1654,10 @@ def main():
         cam_height     = _cfg(cfg, "camera", "height",  480,  int),
         cam_fps        = _cfg(cfg, "camera", "fps",     30,   int),
         cam_rotation   = _cfg(cfg, "camera", "rotation", 0,   int),
-        enable_aruco   = _cfg(cfg, "aruco",  "enabled", False, lambda x: x.lower() == "true"),
-        aruco_dict     = _cfg(cfg, "aruco",  "dict",    "DICT_4X4_1000"),
+        enable_aruco   = _cfg(cfg, "aruco",  "enabled",    False, lambda x: x.lower() == "true"),
+        aruco_dict     = _cfg(cfg, "aruco",  "dict",       "DICT_4X4_1000"),
+        aruco_calib    = _cfg(cfg, "aruco",  "calib_file", ""),
+        aruco_tag_size = _cfg(cfg, "aruco",  "tag_size",   0.15, float),
         throttle_ch    = _cfg(cfg, "rc", "throttle_ch",    3,    int),
         steer_ch       = _cfg(cfg, "rc", "steer_ch",       1,    int),
         mode_ch        = _cfg(cfg, "rc", "mode_ch",        5,    int),
@@ -1413,6 +1671,7 @@ def main():
         failsafe_s     = _cfg(cfg, "rc", "failsafe_s",     0.5,  float),
         speed_min      = _cfg(cfg, "rc", "speed_min",      0.25, float),
         control_hz     = _cfg(cfg, "rc", "control_hz",     50,   int),
+        no_motors      = args.no_motors,
     )
     robot.start()
 

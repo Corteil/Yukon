@@ -59,17 +59,19 @@ python3 camera_web.py
 
 | File | Purpose |
 |------|---------|
-| `main.py` | MicroPython firmware for the Yukon RP2040 |
-| `robot.py` | Pi-side robot daemon (camera, LiDAR, GPS, RC, Yukon serial) |
+| `yukon_firmware_and_software/main.py` | MicroPython firmware for the Yukon RP2040 |
+| `robot_daemon.py` | Pi-side robot daemon (camera, LiDAR, GPS, RC, Yukon serial) |
 | `robot_gui.py` | 4-panel pygame monitor |
 | `robot_web.py` | Flask web dashboard with MJPEG stream (port 5000) |
 | `robot_mobile.py` | Mobile-optimised Flask dashboard with tab navigation (port 5001) |
 | `camera_monitor.py` | Pygame camera monitor with ArUco overlay, sharpness, and calibration |
 | `camera_web.py` | Mobile Flask camera interface with MJPEG stream (port 8080) |
 | `rc_drive.py` | Minimal RC-to-motor bridge |
-| `ibus.py` | FlySky iBUS receiver library |
-| `ld06.py` | LD06 LiDAR driver |
-| `aruco_detector.py` | OpenCV ArUco tag detector |
+| `drivers/ibus.py` | FlySky iBUS receiver library |
+| `drivers/ld06.py` | LD06 LiDAR driver |
+| `robot/aruco_detector.py` | OpenCV ArUco tag detector |
+| `robot/aruco_navigator.py` | Autonomous gate navigator (ArUco + IMU) |
+| `robot/gps_navigator.py` | GPS waypoint navigator |
 | `gnss/` | GNSS driver package (TAU1308, UBlox variants, NTRIP) |
 | `robot.ini` | Runtime configuration |
 | `tools/upload.py` | MicroPython file uploader |
@@ -77,5 +79,5 @@ python3 camera_web.py
 | `tools/calibrate_camera.py` | Interactive camera lens calibration tool (outputs `camera_cal.npz`) |
 | `tools/generate_aruco_tags.py` | Generate ArUco tag PDFs (custom IDs, paper size, dictionary) |
 | `tools/make_checkerboard_pdf.py` | Generate printable checkerboard calibration target PDF |
-| `tools/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
-| `tests/` | Unit tests and live-display tools |
+| `yukon_firmware_and_software/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
+| `tools/test_*.py` | Unit tests and live-display tools |

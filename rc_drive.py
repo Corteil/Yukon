@@ -27,7 +27,7 @@ import queue
 import threading
 import argparse
 
-from ibus import IBusReader, IBusError
+from drivers.ibus import IBusReader, IBusError
 
 # ---------------------------------------------------------------------------
 # Yukon serial protocol constants (mirrors test_main.py)

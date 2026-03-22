@@ -21,7 +21,7 @@ from typing import Optional
 
 import pygame
 
-from ld06 import LD06, LidarScan
+from drivers.ld06 import LD06, LidarScan
 
 # ── Colours (matches robot_gui.py) ───────────────────────────────────────────
 

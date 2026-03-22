@@ -23,6 +23,8 @@ Output:
   dist_coeffs, precomputed undistortion maps (map1/map2), rms, frame_size.
 """
 
+import argparse
+import configparser
 import sys
 import os
 import time
@@ -57,7 +59,12 @@ ROTATION  = 180  # default frame rotation: 0, 90, 180, 270
 
 # ── Output file ───────────────────────────────────────────────────────────────
 _HERE    = os.path.dirname(os.path.abspath(__file__))
-CAL_FILE = os.path.join(_HERE, '..', 'camera_cal.npz')
+_CAL_DIR = os.path.join(_HERE, '..')
+
+def _cal_path(frame_size):
+    """Return the calibration output path for a given (width, height)."""
+    w, h = frame_size
+    return os.path.normpath(os.path.join(_CAL_DIR, f'camera_cal_{w}x{h}.npz'))
 
 # ── Calibration internals ─────────────────────────────────────────────────────
 _CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
@@ -77,26 +84,26 @@ _CYAN   = (  0, 200, 240)
 # ── Camera wrapper ────────────────────────────────────────────────────────────
 
 class _Cam:
-    def __init__(self):
+    def __init__(self, width: int, height: int):
         self._pc2 = None
         self._cap = None
         if _USE_PICAMERA2:
-            print("Using picamera2 backend")
+            print(f"Using picamera2 backend ({width}×{height})")
             pc2 = Picamera2()
             pc2.configure(pc2.create_video_configuration(
-                main={"size": (1456, 1088), "format": "RGB888"}
+                main={"size": (width, height), "format": "RGB888"}
             ))
             pc2.start()
             time.sleep(0.5)   # let AGC settle
             self._pc2 = pc2
         else:
             idx = int(os.environ.get('CAM_INDEX', 0))
-            print(f"Using OpenCV backend (index {idx})")
+            print(f"Using OpenCV backend (index {idx}, {width}×{height})")
             cap = cv2.VideoCapture(idx)
             if not cap.isOpened():
                 sys.exit(f"ERROR: cannot open camera {idx}")
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1456)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1088)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             self._cap = cap
 
     def read(self, rotation=0):
@@ -218,17 +225,38 @@ def _draw_zones(screen, zones, img_points, font, fw=0, mirrored=False):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    _HERE_MAIN = os.path.dirname(os.path.abspath(__file__))
+    default_ini = os.path.join(_HERE_MAIN, '..', 'robot.ini')
+
+    parser = argparse.ArgumentParser(description="Camera lens calibration tool")
+    parser.add_argument('--width',  type=int, default=None,
+                        help='Capture width  (overrides robot.ini)')
+    parser.add_argument('--height', type=int, default=None,
+                        help='Capture height (overrides robot.ini)')
+    parser.add_argument('--config', default=default_ini,
+                        help='Path to robot.ini (default: ../robot.ini)')
+    args = parser.parse_args()
+
+    # Resolution: CLI > robot.ini [camera] > built-in default 640×480
+    cfg = configparser.ConfigParser()
+    cfg.read(args.config)
+    ini_w = int(cfg.get('camera', 'width',  fallback=640))
+    ini_h = int(cfg.get('camera', 'height', fallback=480))
+    width  = args.width  if args.width  is not None else ini_w
+    height = args.height if args.height is not None else ini_h
+
     pygame.init()
     font    = pygame.font.SysFont('monospace', 16)
     font_lg = pygame.font.SysFont('monospace', 20, bold=True)
 
-    cam = _Cam()
+    cam = _Cam(width, height)
 
     obj_points    = []
     img_points    = []
     frame_size    = None
-    camera_matrix = None
+    camera_matrix = None   # raw calibration output (kept for display only)
     dist_coeffs   = None
+    opt_mtx       = None   # post-remap intrinsics — saved to file, used for solvePnP
     map1 = map2   = None
     rms           = 0.0
     calibrated    = False
@@ -248,6 +276,7 @@ def main():
     last_capture_t  = 0.0     # monotonic time of last auto-capture
 
     print("\nCamera Calibration")
+    print(f"  Resolution: {width}×{height}")
     print(f"  Board   : {COLS}×{ROWS} inner corners, {SQUARE_MM} mm squares")
     print(f"  Output  : {os.path.normpath(CAL_FILE)}")
     print(f"  Controls: SPACE capture · A auto-capture · C calibrate · U undistort · R rotate · Q quit\n")
@@ -261,16 +290,14 @@ def main():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 cam.release()
-                _save(calibrated, camera_matrix, dist_coeffs,
-                      map1, map2, rms, frame_size)
+                _save(calibrated, opt_mtx, map1, map2, rms, frame_size)
                 return
 
             if event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_q, pygame.K_ESCAPE):
                     pygame.quit()
                     cam.release()
-                    _save(calibrated, camera_matrix, dist_coeffs,
-                          map1, map2, rms, frame_size)
+                    _save(calibrated, opt_mtx, map1, map2, rms, frame_size)
                     return
 
                 elif event.key == pygame.K_SPACE:
@@ -304,6 +331,7 @@ def main():
                         map1, map2 = cv2.initUndistortRectifyMap(
                             camera_matrix, dist_coeffs, None, new_mtx,
                             frame_size, cv2.CV_16SC2)
+                        opt_mtx      = new_mtx   # save post-remap intrinsics
                         calibrated   = True
                         undistort_on = True
                         q = ("EXCELLENT" if rms < 0.5 else
@@ -444,22 +472,26 @@ def main():
         clock.tick(30)
 
 
-def _save(calibrated, camera_matrix, dist_coeffs, map1, map2, rms, frame_size):
+def _save(calibrated, opt_mtx, map1, map2, rms, frame_size):
     if calibrated:
-        os.makedirs(os.path.dirname(os.path.abspath(CAL_FILE)), exist_ok=True)
-        np.savez(CAL_FILE,
-                 camera_matrix=camera_matrix,
-                 dist_coeffs=dist_coeffs,
+        out = _cal_path(frame_size)
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        # camera_matrix saved here is the post-remap optimal matrix.
+        # After cv2.remap(map1, map2), the undistorted image has these intrinsics
+        # with zero distortion — correct inputs for solvePnP pose estimation.
+        np.savez(out,
+                 camera_matrix=opt_mtx,
+                 dist_coeffs=np.zeros((4, 1), dtype=np.float32),
                  map1=map1,
                  map2=map2,
                  rms=np.array([rms]),
                  frame_size=np.array(frame_size))
         q = ("EXCELLENT" if rms < 0.5 else
              "ACCEPTABLE" if rms < 1.0 else "POOR — recapture with more varied views")
-        print(f"\nCalibration saved → {os.path.normpath(CAL_FILE)}")
+        print(f"\nCalibration saved → {out}")
         print(f"  RMS={rms:.4f} px  [{q}]")
         print(f"  Frame size: {frame_size[0]}×{frame_size[1]}")
-        print("\n  Pass calib_file='camera_cal.npz' to ArucoDetector to enable undistortion.")
+        print(f"\n  Run tools/derive_calibrations.py to generate files for other resolutions.")
     else:
         print("\nNo calibration computed — nothing saved.")
 
