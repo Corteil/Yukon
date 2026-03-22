@@ -664,6 +664,16 @@ poll();
 </html>
 """
 
+def _local_ip():
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+    except Exception:
+        return 'localhost'
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -675,7 +685,7 @@ def main():
     t = threading.Thread(target=camera_worker, args=(state,), daemon=True)
     t.start()
 
-    print(f"Camera web monitor → http://0.0.0.0:{args.port}/")
+    print(f"Camera web monitor → http://{_local_ip()}:{args.port}/")
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
 
 

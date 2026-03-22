@@ -1007,6 +1007,16 @@ def _cfg(cfg, section, key, fallback, cast=str):
     except Exception:
         return fallback
 
+def _local_ip():
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+    except Exception:
+        return 'localhost'
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -1097,7 +1107,7 @@ def main():
         no_motors      = args.no_motors,
     )
     _robot.start()
-    log.info(f'Web dashboard → http://{web_host}:{web_port}/')
+    log.info(f'Web dashboard → http://{_local_ip()}:{web_port}/')
 
     try:
         app.run(host=web_host, port=web_port,

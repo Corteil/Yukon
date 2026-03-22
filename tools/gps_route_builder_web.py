@@ -1026,6 +1026,16 @@ document.addEventListener('keydown', e => {
 </html>"""
 
 
+def _local_ip():
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+    except Exception:
+        return 'localhost'
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -1064,7 +1074,7 @@ def main():
                         format='%(levelname)s %(name)s: %(message)s')
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
-    print(f"Route builder → http://{args.host}:{args.port}/")
+    print(f"Route builder → http://{_local_ip()}:{args.port}/")
     try:
         app.run(host=args.host, port=args.port,
                 threaded=True, use_reloader=False)

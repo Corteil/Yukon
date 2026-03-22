@@ -498,6 +498,16 @@ connect();
 </html>"""
 
 
+def _local_ip():
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+    except Exception:
+        return 'localhost'
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -515,7 +525,7 @@ def main():
 
     print(f"Yukon PTY  : {_yukon_path}", file=sys.stderr)
     print(f"Connect with --port {_yukon_path}", file=sys.stderr)
-    print(f"Web GUI    : http://{args.host}:{args.port}/", file=sys.stderr)
+    print(f"Web GUI    : http://{_local_ip()}:{args.port}/", file=sys.stderr)
 
     # Initialise sim state
     with _sim._lock:
