@@ -30,7 +30,11 @@ from utime import sleep_ms
 _CH_EXE      = 1
 _CH_CONTROL  = 2
 _CH_REPORTS  = 3
-_REPORT_GAME = 0x08   # Game Rotation Vector (accel + gyro, no magnetometer)
+_REPORT_GAME        = 0x08   # Game Rotation Vector (accel + gyro, no magnetometer)
+_REPORT_GEOMAG      = 0x09   # Geomagnetic Rotation Vector (accel + mag, no gyro)
+_REPORT_GYRO        = 0x02   # Calibrated gyroscope (rad/s)
+_REPORT_LINEAR_ACCEL = 0x04  # Linear acceleration — gravity removed (m/s²)
+_REPORT_STABILITY   = 0x13   # Stability classifier (0=unknown 1=on_table 2=stationary 3=stable 4=motion)
 _SET_FEATURE = 0xFD   # Set Feature command
 _ID_REQUEST  = 0xF9   # Product ID Request
 _ID_RESPONSE = 0xF8   # Product ID Response
@@ -47,11 +51,17 @@ class BNO085:
         self._i2c  = i2c
         self._addr = addr
         self._seq  = bytearray(8)            # per-channel sequence counters
-        self._quat = (0.0, 0.0, 0.0, 1.0)   # qx, qy, qz, qw (identity = 0° heading)
-        self._data_received = False          # set True once a valid report is parsed
+        self._quat       = (0.0, 0.0, 0.0, 1.0)  # qx, qy, qz, qw (identity)
+        self._lin_accel  = (0.0, 0.0, 0.0)        # linear accel x/y/z (m/s²)
+        self._gyro_xyz   = (0.0, 0.0, 0.0)        # calibrated gyro x/y/z (rad/s)
+        self._stability  = 0                       # stability classifier value
+        self._data_received = False                # set True once a valid report is parsed
 
         self._reset()
-        self._enable_report(_REPORT_GAME, interval_ms * 1000)
+        self._enable_report(_REPORT_GAME,         interval_ms * 1000)
+        self._enable_report(_REPORT_GYRO,         interval_ms * 1000)
+        self._enable_report(_REPORT_LINEAR_ACCEL, interval_ms * 1000)
+        self._enable_report(_REPORT_STABILITY,    50000)  # 50 ms — lightweight
         sleep_ms(150)                        # let first reports arrive
 
     def _reset(self):
@@ -151,15 +161,44 @@ class BNO085:
             elif rid == 0x3F:        # compact marker: 1-byte record
                 i += 1
             elif rid == _REPORT_GAME:
-                # Need 12 bytes from i: id(1) seq(1) status(1) delay(1) qx(2) qy(2) qz(2) qw(2)
+                # 12 bytes: id(1) seq(1) status(1) delay(1) qx(2) qy(2) qz(2) qw(2)
                 if len(payload) < i + 12:
                     return
-                qx = struct.unpack_from('<h', payload, i + 4)[0]  / _Q14
-                qy = struct.unpack_from('<h', payload, i + 6)[0]  / _Q14
-                qz = struct.unpack_from('<h', payload, i + 8)[0]  / _Q14
-                qw = struct.unpack_from('<h', payload, i + 10)[0] / _Q14
+                _Q = 1 << 14
+                qx = struct.unpack_from('<h', payload, i + 4)[0]  / _Q
+                qy = struct.unpack_from('<h', payload, i + 6)[0]  / _Q
+                qz = struct.unpack_from('<h', payload, i + 8)[0]  / _Q
+                qw = struct.unpack_from('<h', payload, i + 10)[0] / _Q
                 self._quat = (qx, qy, qz, qw)
                 self._data_received = True
+                return
+            elif rid == _REPORT_GYRO:
+                # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
+                # Q9 fixed-point: scale = 1/512
+                if len(payload) < i + 10:
+                    return
+                _QG = 1 << 9
+                gx = struct.unpack_from('<h', payload, i + 4)[0] / _QG
+                gy = struct.unpack_from('<h', payload, i + 6)[0] / _QG
+                gz = struct.unpack_from('<h', payload, i + 8)[0] / _QG
+                self._gyro_xyz = (gx, gy, gz)
+                return
+            elif rid == _REPORT_LINEAR_ACCEL:
+                # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
+                # Q8 fixed-point: scale = 1/256
+                if len(payload) < i + 10:
+                    return
+                _QA = 1 << 8
+                ax = struct.unpack_from('<h', payload, i + 4)[0] / _QA
+                ay = struct.unpack_from('<h', payload, i + 6)[0] / _QA
+                az = struct.unpack_from('<h', payload, i + 8)[0] / _QA
+                self._lin_accel = (ax, ay, az)
+                return
+            elif rid == _REPORT_STABILITY:
+                # 6 bytes: id(1) seq(1) status(1) delay(1) classifier(1) reserved(1)
+                if len(payload) < i + 5:
+                    return
+                self._stability = payload[i + 4]
                 return
             else:
                 return  # unrecognised sub-record
@@ -170,3 +209,62 @@ class BNO085:
         yaw = math.atan2(2.0 * (qw * qz + qx * qy),
                          1.0 - 2.0 * (qy * qy + qz * qz))
         return math.degrees(yaw) % 360.0
+
+    def roll(self):
+        """Return roll in degrees (-180.0 to +180.0), derived from stored quaternion.
+
+        Uses standard aerospace ZYX Euler convention, matching heading().
+        Positive roll = right side down.
+        """
+        qx, qy, qz, qw = self._quat
+        sinr_cosp = 2.0 * (qw * qx + qy * qz)
+        cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+        return math.degrees(math.atan2(sinr_cosp, cosr_cosp))
+
+    def pitch(self):
+        """Return pitch in degrees (-90.0 to +90.0), derived from stored quaternion.
+
+        Positive pitch = nose up.
+        """
+        qx, qy, qz, qw = self._quat
+        sinp = 2.0 * (qw * qy - qz * qx)
+        sinp = max(-1.0, min(1.0, sinp))   # clamp for numerical safety at ±90°
+        return math.degrees(math.asin(sinp))
+
+    def linear_acceleration(self):
+        """Return linear acceleration as (x, y, z) tuple in m/s², gravity removed.
+
+        Useful for wheel-slip detection (motor commanded but near-zero acceleration)
+        and collision detection (sudden negative-Z spike on impact).
+        Returns (0.0, 0.0, 0.0) until the first report is received.
+        """
+        return self._lin_accel
+
+    def gyro(self):
+        """Return calibrated angular velocity as (x, y, z) tuple in rad/s.
+
+        Useful for turn-rate logging and bearing-rate-of-change computation.
+        Returns (0.0, 0.0, 0.0) until the first report is received.
+        """
+        return self._gyro_xyz
+
+    def stability(self):
+        """Return the stability classifier value (int).
+
+        0 = unknown
+        1 = on table  (completely stationary, flat surface)
+        2 = stationary (stationary but may be held)
+        3 = stable    (slow, smooth motion)
+        4 = motion    (significant motion detected)
+
+        Returns 0 until the first report is received.
+        """
+        return self._stability
+
+    def is_moving(self):
+        """Return True if the stability classifier reports motion (value == 4)."""
+        return self._stability == 4
+
+    def is_still(self):
+        """Return True if the classifier reports stationary or on-table (value <= 2)."""
+        return 1 <= self._stability <= 2

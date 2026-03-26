@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ArUco Tag Generator — HackyRacingRobot</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap');
+
+  :root {
+    --bg:        #0d0f14;
+    --surface:   #141720;
+    --surface2:  #1c2030;
+    --border:    #2a3045;
+    --border-hi: #3d4f6e;
+    --accent:    #00d4ff;
+    --accent2:   #ff6b35;
+    --green:     #39d98a;
+    --yellow:    #f5c518;
+    --red:       #e84a4a;
+    --text:      #d8dde8;
+    --text-dim:  #6b7590;
+    --mono:      'Share Tech Mono', monospace;
+    --sans:      'Barlow Condensed', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ─────────────────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: relative;
+    overflow: hidden;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.6;
+  }
+  #logo-tag {
+    image-rendering: pixelated;
+  }
+  h1 {
+    font-family: var(--sans);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  h1 span { color: var(--accent); }
+  .header-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    margin-left: auto;
+  }
+
+  /* ── Main layout ──────────────────────────────────────────────── */
+  .main {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ── Left control panel ───────────────────────────────────────── */
+  .controls {
+    padding: 24px 20px;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--accent);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    margin-bottom: 5px;
+  }
+
+  select, input[type=number], input[type=text] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 10px;
+    border-radius: 3px;
+    outline: none;
+    transition: border-color 0.15s;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  select { cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7590' stroke-width='1.5' fill='none'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+  select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1); }
+
+  .field { margin-bottom: 12px; }
+
+  .id-controls {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .id-controls button {
+    flex: 1;
+    padding: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+    letter-spacing: 1px;
+    transition: all 0.1s;
+  }
+  .id-controls button:hover { border-color: var(--border-hi); color: var(--text); }
+
+  /* ── Size slider ──────────────────────────────────────────────── */
+  .slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+  .slider-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    width: 50px;
+    text-align: right;
+  }
+
+  /* ── Generate button ──────────────────────────────────────────── */
+  .btn-generate {
+    width: 100%;
+    padding: 14px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--sans);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 3px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.2s;
+    margin-top: 4px;
+  }
+  .btn-generate::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    transform: translateX(-100%);
+    transition: transform 0.2s;
+    z-index: 0;
+  }
+  .btn-generate:hover::before { transform: translateX(0); }
+  .btn-generate:hover { color: var(--bg); }
+  .btn-generate span { position: relative; z-index: 1; }
+  .btn-generate:disabled {
+    border-color: var(--border);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+  .btn-generate:disabled::before { display: none; }
+
+  .btn-download {
+    width: 100%;
+    padding: 11px;
+    background: rgba(57,217,138,0.1);
+    border: 1px solid var(--green);
+    color: var(--green);
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+    display: none;
+  }
+  .btn-download:hover { background: rgba(57,217,138,0.2); }
+  .btn-download.visible { display: block; }
+
+  /* ── Status bar ───────────────────────────────────────────────── */
+  .status {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 10px;
+    border-radius: 3px;
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+  }
+  .status.ok     { border-color: var(--green);  color: var(--green); }
+  .status.error  { border-color: var(--red);    color: var(--red);   }
+  .status.info   { border-color: var(--accent); color: var(--accent);}
+  .status::before { content: '▸'; opacity: 0.6; }
+
+  /* ── Preview area ─────────────────────────────────────────────── */
+  .preview {
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .preview-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .preview-toolbar .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .page-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .nav-btn {
+    width: 28px; height: 28px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.1s;
+  }
+  .nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .nav-btn:disabled { opacity: 0.3; cursor: default; }
+  .page-indicator {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 60px;
+    text-align: center;
+  }
+
+  .preview-canvas-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 24px;
+    position: relative;
+  }
+
+  /* Grid background */
+  .preview-canvas-wrap::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 32px 32px;
+    opacity: 0.25;
+  }
+
+  #preview-canvas {
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    background: white;
+    image-rendering: crisp-edges;
+    position: relative;
+    z-index: 1;
+    transition: opacity 0.2s;
+    display: block;  /* explicit so width/height take effect */
+  }
+
+  .preview-placeholder {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    color: var(--text-dim);
+  }
+  .preview-placeholder svg {
+    opacity: 0.15;
+    width: 120px; height: 120px;
+  }
+  .preview-placeholder p {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-align: center;
+    line-height: 1.8;
+  }
+
+  /* ── Info strip at bottom of preview ─────────────────────────── */
+  .preview-info {
+    padding: 8px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 20px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .preview-info span b { color: var(--text); }
+
+  /* ── Spinner ──────────────────────────────────────────────────── */
+  .spinner {
+    display: none;
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ───────────────────────────────────────────────── */
+  @media (max-width: 800px) {
+    .main { grid-template-columns: 1fr; }
+    .controls { border-right: none; border-bottom: 1px solid var(--border); }
+    .preview { min-height: 50vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <canvas id="logo-tag" width="44" height="44"
+    title=""
+    style="flex-shrink:0;cursor:pointer;border-radius:2px"
+    onclick="logoClick()"></canvas>
+  <h1>ArUco <span>Tag Generator</span></h1>
+  <div class="header-sub">HackyRacingRobot · tools/generate_aruco_tags.py</div>
+</header>
+
+<div class="main">
+
+  <!-- ── Left: Controls ─────────────────────────────────────────── -->
+  <div class="controls">
+
+    <!-- Dictionary -->
+    <div>
+      <div class="section-label">Dictionary</div>
+      <div class="field">
+        <label>ARUCO DICT</label>
+        <select id="sel-dict" onchange="updateCustomIdRange()">
+          <option value="4X4_50">4×4 / 50 IDs</option>
+          <option value="4X4_100">4×4 / 100 IDs</option>
+          <option value="4X4_250">4×4 / 250 IDs</option>
+          <option value="4X4_1000" selected>4×4 / 1000 IDs  ← robot default</option>
+          <option value="5X5_50">5×5 / 50 IDs</option>
+          <option value="5X5_100">5×5 / 100 IDs</option>
+          <option value="5X5_250">5×5 / 250 IDs</option>
+          <option value="6X6_50">6×6 / 50 IDs</option>
+          <option value="6X6_100">6×6 / 100 IDs</option>
+          <option value="7X7_50">7×7 / 50 IDs</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Tag IDs -->
+    <div>
+      <div class="section-label">Tag IDs</div>
+      <div style="margin-top:10px">
+        <label id="custom-id-label">CUSTOM ID (0–999)</label>
+        <div style="display:flex;gap:6px">
+          <input type="number" id="custom-id" min="0" max="999" placeholder="e.g. 42" style="flex:1"
+                 oninput="clampCustomId(this)" onkeydown="if(event.key==='Enter')addCustomId()">
+          <button onclick="addCustomId()" style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);font-family:var(--mono);font-size:12px;cursor:pointer;border-radius:3px;white-space:nowrap;transition:all 0.1s" onmouseover="this.style.borderColor='var(--border-hi)'" onmouseout="this.style.borderColor='var(--border)'">+ ADD</button>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <!-- Mode toggle -->
+        <div style="display:flex;gap:0;margin-bottom:10px;border:1px solid var(--border);border-radius:4px;overflow:hidden">
+          <button id="mode-tags"  onclick="setRangeMode('tags')"
+            style="flex:1;padding:7px 4px;background:rgba(0,212,255,0.15);border:none;border-right:1px solid var(--border);
+                   color:var(--accent);font-family:var(--mono);font-size:11px;letter-spacing:1px;cursor:pointer;transition:all 0.15s">
+            ⬡ TAG IDs
+          </button>
+          <button id="mode-gates" onclick="setRangeMode('gates')"
+            style="flex:1;padding:7px 4px;background:var(--bg);border:none;
+                   color:var(--text-dim);font-family:var(--mono);font-size:11px;letter-spacing:1px;cursor:pointer;transition:all 0.15s">
+            ◈ GATES
+          </button>
+        </div>
+
+        <!-- Post convention toggle (gate mode only) -->
+        <div id="convention-row" style="display:none;align-items:center;justify-content:space-between;
+             margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:3px;border:1px solid var(--border)">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--text-dim);letter-spacing:1px">POST CONVENTION</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="conv-label-left"  style="font-family:var(--mono);font-size:10px;color:var(--green)">ODD = LEFT</span>
+            <!-- Toggle switch -->
+            <label style="position:relative;display:inline-block;width:36px;height:18px;cursor:pointer">
+              <input type="checkbox" id="conv-switch" onchange="toggleConvention(this.checked)"
+                style="opacity:0;width:0;height:0;position:absolute">
+              <span id="conv-track" style="position:absolute;inset:0;background:var(--border);border-radius:9px;transition:background 0.2s"></span>
+              <span id="conv-thumb" style="position:absolute;left:2px;top:2px;width:14px;height:14px;
+                    background:var(--green);border-radius:50%;transition:all 0.2s"></span>
+            </label>
+            <span id="conv-label-right" style="font-family:var(--mono);font-size:10px;color:var(--text-dim)">EVEN = LEFT</span>
+          </div>
+        </div>
+
+        <!-- Context description -->
+        <div id="range-desc" style="font-family:var(--mono);font-size:10px;color:var(--text-dim);
+             margin-bottom:8px;padding:6px 8px;background:var(--surface2);border-radius:3px;
+             border-left:2px solid var(--accent);line-height:1.6">
+          TAG mode: enter individual tag IDs.<br>e.g. 0–3 adds tags 0, 1, 2, 3.
+        </div>
+
+        <!-- From / To inputs -->
+        <div style="display:flex;gap:6px;align-items:center">
+          <div style="flex:1">
+            <label id="label-from" style="margin-bottom:3px">FROM TAG</label>
+            <input type="number" id="range-from" min="0" max="999" placeholder="0" style="width:100%">
+          </div>
+          <span style="font-family:var(--mono);font-size:16px;color:var(--text-dim);flex-shrink:0;margin-top:16px">–</span>
+          <div style="flex:1">
+            <label id="label-to" style="margin-bottom:3px">TO TAG</label>
+            <input type="number" id="range-to" min="0" max="999" placeholder="9" style="width:100%">
+          </div>
+          <button onclick="addRange()"
+            style="margin-top:16px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);
+                   color:var(--text-dim);font-family:var(--mono);font-size:12px;cursor:pointer;
+                   border-radius:3px;white-space:nowrap;transition:all 0.1s"
+            onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">+ ADD</button>
+        </div>
+
+        <!-- Quick-select row -->
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button onclick="selectAll()" id="btn-select-all"
+            style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);
+                   color:var(--text-dim);font-family:var(--mono);font-size:11px;cursor:pointer;
+                   border-radius:3px;letter-spacing:1px;transition:all 0.1s"
+            onmouseover="this.style.borderColor='var(--border-hi)';this.style.color='var(--text)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">ALL</button>
+          <button onclick="selectEvenOdd('odd')" id="btn-odd"
+            style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);
+                   color:var(--text-dim);font-family:var(--mono);font-size:11px;cursor:pointer;
+                   border-radius:3px;letter-spacing:1px;transition:all 0.1s"
+            onmouseover="this.style.borderColor='var(--border-hi)';this.style.color='var(--text)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">ODD</button>
+          <button onclick="selectEvenOdd('even')" id="btn-even"
+            style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);
+                   color:var(--text-dim);font-family:var(--mono);font-size:11px;cursor:pointer;
+                   border-radius:3px;letter-spacing:1px;transition:all 0.1s"
+            onmouseover="this.style.borderColor='var(--border-hi)';this.style.color='var(--text)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">EVEN</button>
+          <button onclick="clearIds()"
+            style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);
+                   color:var(--text-dim);font-family:var(--mono);font-size:11px;cursor:pointer;
+                   border-radius:3px;letter-spacing:1px;transition:all 0.1s"
+            onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'">CLEAR</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Paper & Size -->
+    <div>
+      <div class="section-label">Layout</div>
+      <div class="field">
+        <label>PAPER SIZE</label>
+        <select id="sel-paper" onchange="autoSize()">
+          <option value="A4" selected>A4  (210 × 297 mm)</option>
+          <option value="A3">A3  (297 × 420 mm)</option>
+          <option value="A5">A5  (148 × 210 mm)</option>
+          <option value="LETTER">US Letter  (216 × 279 mm)</option>
+          <option value="LEGAL">US Legal  (216 × 356 mm)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>TAG SIZE <span id="size-auto-badge" style="color:var(--accent);font-size:9px;letter-spacing:1px;margin-left:6px">AUTO</span></label>
+        <div class="slider-wrap">
+          <input type="range" id="size-slider" min="50" max="280" value="160" step="5"
+                 oninput="onSizeSliderInput(this)">
+          <div class="slider-val"><span id="size-val">160</span> mm</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>TAGS PER PAGE</label>
+        <select id="sel-perpage" onchange="autoSize()">
+          <option value="1" selected>1 tag per page (full-size)</option>
+          <option value="2">2 tags per page</option>
+          <option value="4">4 tags per page (2×2 grid)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Output -->
+    <div>
+      <div class="section-label">Output</div>
+      <div class="field">
+        <label>DPI</label>
+        <select id="sel-dpi">
+          <option value="150">150 DPI — screen / quick print</option>
+          <option value="300" selected>300 DPI — standard print</option>
+          <option value="600">600 DPI — high quality</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="status" class="status" style="color:var(--text-dim)">
+      Select tag IDs and click Generate
+    </div>
+
+    <button class="btn-generate" id="btn-generate" onclick="generate()">
+      <span>⬡ Generate Preview</span>
+    </button>
+
+    <button class="btn-download" id="btn-download" onclick="downloadPDF()">
+      ↓ Download PDF
+    </button>
+
+  </div>
+
+  <!-- ── Right: Preview ─────────────────────────────────────────── -->
+  <div class="preview">
+    <div class="preview-toolbar">
+      <span class="label">Preview</span>
+      <div class="page-nav">
+        <button class="nav-btn" id="btn-prev" onclick="changePage(-1)" disabled>‹</button>
+        <div class="page-indicator" id="page-indicator">— / —</div>
+        <button class="nav-btn" id="btn-next" onclick="changePage(1)" disabled>›</button>
+      </div>
+    </div>
+
+    <div class="preview-canvas-wrap" id="canvas-wrap">
+      <div class="preview-placeholder" id="placeholder">
+        <!-- ArUco-like SVG icon -->
+        <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="5" y="5" width="90" height="90" fill="currentColor"/>
+          <rect x="15" y="15" width="30" height="30" fill="white"/>
+          <rect x="20" y="20" width="10" height="10" fill="currentColor"/>
+          <rect x="55" y="15" width="30" height="30" fill="white"/>
+          <rect x="60" y="20" width="10" height="10" fill="currentColor"/>
+          <rect x="15" y="55" width="30" height="30" fill="white"/>
+          <rect x="20" y="60" width="10" height="10" fill="currentColor"/>
+          <rect x="40" y="40" width="10" height="10" fill="white"/>
+          <rect x="55" y="55" width="20" height="10" fill="white"/>
+          <rect x="65" y="65" width="20" height="10" fill="white"/>
+        </svg>
+        <p>Configure options and click<br><b style="color:var(--accent)">Generate Preview</b></p>
+      </div>
+      <canvas id="preview-canvas" style="display:none"></canvas>
+    </div>
+
+    <div class="preview-info" id="preview-info" style="display:none">
+      <span>DICT: <b id="info-dict">—</b></span>
+      <span id="info-ids-label">IDs: </span><b id="info-ids">—</b>
+      <span>PAPER: <b id="info-paper">—</b></span>
+      <span>TAG: <b id="info-size">—</b> mm</span>
+      <span>DPI: <b id="info-dpi">—</b></span>
+      <span>PAGES: <b id="info-pages">—</b></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────
+const PAPER_SIZES = {
+  A4:     [210, 297],
+  A3:     [297, 420],
+  A5:     [148, 210],
+  LETTER: [216, 279],
+  LEGAL:  [216, 356],
+};
+
+let selectedIds  = new Set();
+let pages        = [];   // array of ImageData / canvas per page
+let currentPage  = 0;
+
+// ── ID selection ────────────────────────────────────────────────
+function clearIds() {
+  selectedIds.clear();
+  updateStatus();
+}
+
+function _dictMaxId() {
+  const dictName = document.getElementById('sel-dict').value;
+  const d = ARUCO_DICTS[dictName];
+  return d ? d.p.length - 1 : 999;
+}
+
+function updateCustomIdRange() {
+  const max = _dictMaxId();
+  const input = document.getElementById('custom-id');
+  input.max = max;
+  // Clamp any value already in the box
+  if (input.value !== '' && parseInt(input.value) > max) input.value = max;
+  // Update label: show selected count + max range
+  _refreshCustomLabel();
+}
+
+function _refreshCustomLabel() {
+  const max   = _dictMaxId();
+  const n     = selectedIds.size;
+  const label = document.getElementById('custom-id-label');
+  if (n === 0) {
+    label.textContent = `CUSTOM ID (0–${max})`;
+    label.style.color = '';
+  } else {
+    label.innerHTML =
+      `CUSTOM ID (0–${max}) &nbsp;`
+      + `<span style="color:var(--accent)">${n} selected</span>`;
+  }
+}
+
+function clampCustomId(input) {
+  const max = _dictMaxId();
+  const val = parseInt(input.value);
+  if (!isNaN(val)) {
+    if (val < 0)   input.value = 0;
+    if (val > max) input.value = max;
+    // Highlight red if somehow still out of range
+    input.style.borderColor = (val < 0 || val > max) ? 'var(--red)' : '';
+  } else {
+    input.style.borderColor = '';
+  }
+}
+
+function addCustomId() {
+  const input = document.getElementById('custom-id');
+  const max   = _dictMaxId();
+  const id    = parseInt(input.value);
+  if (isNaN(id) || id < 0 || id > max) {
+    setStatus('error', `ID must be between 0 and ${max} for this dictionary`);
+    input.style.borderColor = 'var(--red)';
+    return;
+  }
+  input.style.borderColor = '';
+  selectedIds.add(id);
+  input.value = '';
+  _refreshCustomLabel();
+  updateStatus();
+}
+
+// ── Range mode: 'tags' | 'gates' ─────────────────────────────────
+let rangeMode  = 'tags';
+let evenIsLeft = false;   // false = odd IDs are left posts  (Gate 0 → tags 1L + 2R)
+                          // true  = even IDs are left posts (Gate 0 → tags 0L + 1R)
+
+// ── Gate ↔ tag ID formulas ────────────────────────────────────────
+// odd=left:  left tag = 2N+1,  right tag = 2N+2   (starts at tag 1)
+// even=left: left tag = 2N,    right tag = 2N+1   (starts at tag 0)
+
+function _gateLeftTag(g)  { return evenIsLeft ? g * 2     : g * 2 + 1; }
+function _gateRightTag(g) { return evenIsLeft ? g * 2 + 1 : g * 2 + 2; }
+
+function toggleConvention(checked) {
+  evenIsLeft = checked;
+  _applyConventionStyles();
+  setRangeMode(rangeMode);
+}
+
+function _applyConventionStyles() {
+  const lLabel = document.getElementById('conv-label-left');
+  const rLabel = document.getElementById('conv-label-right');
+  const thumb  = document.getElementById('conv-thumb');
+  const track  = document.getElementById('conv-track');
+  if (evenIsLeft) {
+    lLabel.textContent = 'EVEN = LEFT'; lLabel.style.color = 'var(--text-dim)';
+    rLabel.textContent = 'ODD = LEFT';  rLabel.style.color = 'var(--yellow)';
+    thumb.style.left   = '20px'; thumb.style.background = 'var(--yellow)';
+    track.style.background = 'rgba(245,197,24,0.3)';
+  } else {
+    lLabel.textContent = 'ODD = LEFT';  lLabel.style.color = 'var(--green)';
+    rLabel.textContent = 'EVEN = LEFT'; rLabel.style.color = 'var(--text-dim)';
+    thumb.style.left   = '2px';  thumb.style.background = 'var(--green)';
+    track.style.background = 'var(--border)';
+  }
+}
+
+function setRangeMode(mode) {
+  rangeMode = mode;
+  const isTags = mode === 'tags';
+
+  // Mode toggle button styles
+  const btnTags  = document.getElementById('mode-tags');
+  const btnGates = document.getElementById('mode-gates');
+  btnTags.style.background  = isTags  ? 'rgba(0,212,255,0.15)' : 'var(--bg)';
+  btnTags.style.color       = isTags  ? 'var(--accent)'        : 'var(--text-dim)';
+  btnGates.style.background = !isTags ? 'rgba(57,217,138,0.15)': 'var(--bg)';
+  btnGates.style.color      = !isTags ? 'var(--green)'         : 'var(--text-dim)';
+
+  // Convention toggle — gate mode only
+  document.getElementById('convention-row').style.display = isTags ? 'none' : 'flex';
+
+  // Description
+  const desc = document.getElementById('range-desc');
+  desc.style.borderLeftColor = isTags ? 'var(--accent)' : 'var(--green)';
+  if (isTags) {
+    desc.innerHTML = 'TAG mode: individual tag IDs.<br>e.g. 0–3 adds tags 0, 1, 2, 3.';
+  } else {
+    const L0 = _gateLeftTag(0),  R0 = _gateRightTag(0);
+    const L1 = _gateLeftTag(1),  R1 = _gateRightTag(1);
+    const leftWord  = evenIsLeft ? 'even' : 'odd';
+    const rightWord = evenIsLeft ? 'odd'  : 'even';
+    desc.innerHTML =
+      `Gate 0 = tag <span style="color:var(--green)">${L0} LEFT</span>`
+      + ` + tag <span style="color:var(--yellow)">${R0} RIGHT</span>`
+      + ` &nbsp;·&nbsp; Gate 1 = ${L1}L + ${R1}R<br>`
+      + `<span style="color:var(--text-dim);font-size:9px">`
+      + `${leftWord} IDs = left posts &nbsp;·&nbsp; ${rightWord} IDs = right posts</span>`;
+  }
+
+  // Input labels / placeholders
+  document.getElementById('label-from').textContent = isTags ? 'FROM TAG'  : 'FROM GATE';
+  document.getElementById('label-to').textContent   = isTags ? 'TO TAG'    : 'TO GATE';
+  const fromIn = document.getElementById('range-from');
+  const toIn   = document.getElementById('range-to');
+  fromIn.min = 0; fromIn.max = isTags ? 999 : 499;
+  fromIn.placeholder = '0'; fromIn.value = isTags ? '' : '0';
+  toIn.min   = 0; toIn.max   = isTags ? 999 : 499;
+  toIn.placeholder   = isTags ? '3' : '4'; toIn.value = '';
+
+  // Quick-select button labels
+  document.getElementById('btn-select-all').textContent = isTags ? 'ALL' : 'ALL GATES';
+  document.getElementById('btn-odd').textContent  =
+    isTags ? 'ODD'  : `LEFT  (${evenIsLeft ? 'even' : 'odd'})`;
+  document.getElementById('btn-even').textContent =
+    isTags ? 'EVEN' : `RIGHT (${evenIsLeft ? 'odd'  : 'even'})`;
+}
+
+function addRange() {
+  const from = parseInt(document.getElementById('range-from').value);
+  const to   = parseInt(document.getElementById('range-to').value);
+
+  if (isNaN(from) || isNaN(to)) {
+    setStatus('error', `Enter both From and To ${rangeMode === 'gates' ? 'gate numbers' : 'tag IDs'}`);
+    return;
+  }
+
+  if (rangeMode === 'gates') {
+    if (from < 0 || to > 499 || from > to) {
+      setStatus('error', 'Gate range must be 0–499 and From ≤ To'); return;
+    }
+    if (to - from > 49) {
+      setStatus('error', `Too large: ${to-from+1} gates = ${(to-from+1)*2} tags. Max 50 gates.`); return;
+    }
+    let added = 0;
+    for (let g = from; g <= to; g++) {
+      const tL = _gateLeftTag(g);
+      const tR = _gateRightTag(g);
+      if (!selectedIds.has(tL)) { selectedIds.add(tL); added++; }
+      if (!selectedIds.has(tR)) { selectedIds.add(tR); added++; }
+    }
+    document.getElementById('range-from').value = '';
+    document.getElementById('range-to').value   = '';
+    const gCount = to - from + 1;
+    const fL = _gateLeftTag(from), fR = _gateRightTag(from);
+    setStatus('ok',
+      `Added ${gCount} gate${gCount>1?'s':''} (${added} tags) — gates ${from}–${to}. `
+      + `Gate ${from}: tag ${fL} ` + `◄LEFT + tag ${fR} RIGHT►`);
+  } else {
+    if (from < 0 || to > 999 || from > to) {
+      setStatus('error', 'Range must be 0–999 and From ≤ To'); return;
+    }
+    if (to - from > 99) {
+      setStatus('error', `Too large: ${to-from+1} tags. Max 100 at a time.`); return;
+    }
+    let added = 0;
+    for (let id = from; id <= to; id++) {
+      if (!selectedIds.has(id)) { selectedIds.add(id); added++; }
+    }
+    document.getElementById('range-from').value = '';
+    document.getElementById('range-to').value   = '';
+    setStatus('ok', `Added ${added} tag ID${added>1?'s':''} — range ${from}–${to}`);
+  }
+  updateStatus();
+}
+
+function selectAll() {
+  if (rangeMode === 'gates') {
+    for (let g = 0; g <= 11; g++) {
+      selectedIds.add(_gateLeftTag(g));
+      selectedIds.add(_gateRightTag(g));
+    }
+  } else {
+    for (let id = 0; id <= 23; id++) selectedIds.add(id);
+  }
+  updateStatus();
+}
+
+function selectEvenOdd(parity) {
+  // parity argument: 'odd' = LEFT post button, 'even' = RIGHT post button
+  const pool = selectedIds.size > 0
+    ? [...selectedIds]
+    : Array.from({length: 24}, (_, i) => i + (evenIsLeft ? 0 : 1));
+
+  // Determine which numeric parity to keep
+  let keepParity;
+  if (rangeMode === 'gates') {
+    // 'odd' click = left post; left post tag parity depends on convention
+    keepParity = parity === 'odd'
+      ? (evenIsLeft ? 'even' : 'odd')   // left post numeric parity
+      : (evenIsLeft ? 'odd'  : 'even'); // right post numeric parity
+  } else {
+    keepParity = parity;
+  }
+
+  clearIds();
+  pool.forEach(id => {
+    if (keepParity === 'odd' ? id % 2 === 1 : id % 2 === 0) selectedIds.add(id);
+  });
+  updateStatus();
+}
+
+function _idsDisplay(sortedIds) {
+  if (rangeMode === 'gates') {
+    const gates = new Set();
+    sortedIds.forEach(id => {
+      const g = evenIsLeft ? Math.floor(id / 2) : Math.floor((id - 1) / 2);
+      if (g >= 0) gates.add(g);
+    });
+    const gList = [...gates].sort((a,b)=>a-b);
+    return `gates ${gList.join(', ')} → tags ${sortedIds.join(', ')}`;
+  }
+  return `IDs: ${sortedIds.join(', ')}`;
+}
+
+function updateStatus() {
+  const n = selectedIds.size;
+  _refreshCustomLabel();
+  if (n === 0) { setStatus('', 'Select tag IDs and click Generate'); return; }
+  const sorted = [...selectedIds].sort((a,b)=>a-b);
+  setStatus('info', `${n} tag${n>1?'s':''} selected — ${_idsDisplay(sorted)}`);
+}
+
+// ── Slider & auto-size ───────────────────────────────────────────
+
+// Margins and gaps (mm) used by each layout mode — must match renderPage* functions
+const LAYOUT_PARAMS = {
+  1: { margin: 15, gap: 0,  cols: 1, rows: 1 },
+  2: { margin: 10, gap: 8,  cols: 1, rows: 2 },
+  4: { margin: 10, gap: 5,  cols: 2, rows: 2 },
+};
+
+function autoSize() {
+  const paper   = document.getElementById('sel-paper').value;
+  const perPage = parseInt(document.getElementById('sel-perpage').value);
+  const [pw, ph] = PAPER_SIZES[paper];
+  const p = LAYOUT_PARAMS[perPage] || LAYOUT_PARAMS[1];
+
+  // Available space per tag in each dimension
+  const availW = (pw - 2 * p.margin - (p.cols - 1) * p.gap) / p.cols;
+  const availH = (ph - 2 * p.margin - (p.rows - 1) * p.gap) / p.rows;
+  // Leave room for label below tag (~12 mm)
+  const labelGap = perPage === 1 ? 18 : 10;
+  const best = Math.floor(Math.min(availW, availH - labelGap) / 5) * 5; // round to 5mm
+  const clamped = Math.max(50, Math.min(280, best));
+
+  const slider = document.getElementById('size-slider');
+  slider.value = clamped;
+  document.getElementById('size-val').textContent = clamped;
+  document.getElementById('size-auto-badge').style.display = 'inline';
+}
+
+function onSizeSliderInput(slider) {
+  // User manually moved slider — hide AUTO badge
+  document.getElementById('size-val').textContent = slider.value;
+  document.getElementById('size-auto-badge').style.display = 'none';
+}
+
+// ── Status ────────────────────────────────────────────────────────
+function setStatus(type, msg) {
+  const el = document.getElementById('status');
+  el.className = `status ${type}`;
+  el.textContent = msg;
+}
+
+
+// ── Tag rendering (Canvas API — no server needed) ─────────────────
+function mmToPx(mm, dpi) { return Math.round(mm / 25.4 * dpi); }
+
+// ── Complete ArUco pattern data (extracted from OpenCV) ─────────
+// All dictionaries, all IDs — no fallback needed.
+const ARUCO_DICTS = {
+  "4X4_50": {size:4, p:[19149,61541,52434,26297,43873,34354,25041,15117,293,12457,1646,61016,61768,54768,56142,55745,47514,39423,37793,35152,31092,20436,13098,8829,440,27534,21275,23211,57052,52112,48106,43085,24880,3892,63313,63190,59274,64256,61961,58277,59623,54743,52595,51021,56087,53524,53952,46235,45009,45036]},
+  "4X4_100": {size:4, p:[19149,61541,52434,26297,43873,34354,25041,15117,293,12457,1646,61016,61768,54768,56142,55745,47514,39423,37793,35152,31092,20436,13098,8829,440,27534,21275,23211,57052,52112,48106,43085,24880,3892,63313,63190,59274,64256,61961,58277,59623,54743,52595,51021,56087,53524,53952,46235,45009,45036,44651,43671,41662,41064,38910,38808,40667,40470,38125,36890,38944,33252,32607,31931,29789,27781,31635,31445,31331,25462,24670,17539,17403,18852,16439,18516,13792,13981,9895,11306,13159,14431,15048,5794,1754,1092,4565,2226,51850,30034,35304,62768,63924,53822,46631,48139,45257,45100,38427,36664]},
+  "4X4_250": {size:4, p:[19149,61541,52434,26297,43873,34354,25041,15117,293,12457,1646,61016,61768,54768,56142,55745,47514,39423,37793,35152,31092,20436,13098,8829,440,27534,21275,23211,57052,52112,48106,43085,24880,3892,63313,63190,59274,64256,61961,58277,59623,54743,52595,51021,56087,53524,53952,46235,45009,45036,44651,43671,41662,41064,38910,38808,40667,40470,38125,36890,38944,33252,32607,31931,29789,27781,31635,31445,31331,25462,24670,17539,17403,18852,16439,18516,13792,13981,9895,11306,13159,14431,15048,5794,1754,1092,4565,2226,51850,30034,35304,62768,63924,53822,46631,48139,45257,45100,38427,36664,34193,19221,4784,792,345,65498,65468,62839,62841,64912,65507,65384,63432,62926,63033,62718,62980,62631,61309,59346,61319,61324,60811,60750,58630,60665,62449,62222,64460,62304,61709,61698,63667,61531,63696,64074,61550,63524,57627,60358,57983,59959,57460,59973,57934,57215,55062,56669,55212,54543,56584,54975,57017,54854,54371,54349,50997,51153,53240,50968,50614,50586,52642,50295,50914,50220,55736,55423,53333,53995,55841,55980,53384,52151,50007,50110,52210,51972,51557,49695,51861,49910,49682,49211,49299,51249,49827,49801,51279,49384,49152,46874,48535,46546,48799,46766,48674,46112,42928,42423,42985,44962,42245,42314,44764,42101,42726,44746,45974,47422,45556,48032,45478,45692,45698,47143,47244,41850,41403,43476,41796,43580,41105,40980,41709,43681,40335,40426,40509,38111,40122,38051,38052,34803,34096,34688,34431,36378,36491,34377,36396,33996,39829,39255,37208,37230,39645,37428,39026,37582]},
+  "4X4_1000": {size:4, p:[19149,61541,52434,26297,43873,34354,25041,15117,293,12457,1646,61016,61768,54768,56142,55745,47514,39423,37793,35152,31092,20436,13098,8829,440,27534,21275,23211,57052,52112,48106,43085,24880,3892,63313,63190,59274,64256,61961,58277,59623,54743,52595,51021,56087,53524,53952,46235,45009,45036,44651,43671,41662,41064,38910,38808,40667,40470,38125,36890,38944,33252,32607,31931,29789,27781,31635,31445,31331,25462,24670,17539,17403,18852,16439,18516,13792,13981,9895,11306,13159,14431,15048,5794,1754,1092,4565,2226,51850,30034,35304,62768,63924,53822,46631,48139,45257,45100,38427,36664,34193,19221,4784,792,345,65498,65468,62839,62841,64912,65507,65384,63432,62926,63033,62718,62980,62631,61309,59346,61319,61324,60811,60750,58630,60665,62449,62222,64460,62304,61709,61698,63667,61531,63696,64074,61550,63524,57627,60358,57983,59959,57460,59973,57934,57215,55062,56669,55212,54543,56584,54975,57017,54854,54371,54349,50997,51153,53240,50968,50614,50586,52642,50295,50914,50220,55736,55423,53333,53995,55841,55980,53384,52151,50007,50110,52210,51972,51557,49695,51861,49910,49682,49211,49299,51249,49827,49801,51279,49384,49152,46874,48535,46546,48799,46766,48674,46112,42928,42423,42985,44962,42245,42314,44764,42101,42726,44746,45974,47422,45556,48032,45478,45692,45698,47143,47244,41850,41403,43476,41796,43580,41105,40980,41709,43681,40335,40426,40509,38111,40122,38051,38052,34803,34096,34688,34431,36378,36491,34377,36396,33996,39829,39255,37208,37230,39645,37428,39026,37582,33151,33053,33138,35629,33741,33226,35412,35066,32980,33317,32877,32650,32524,32345,30226,32259,26457,26079,28348,26118,28268,25643,31734,31636,31035,29083,31205,31409,29236,31384,31312,31272,30796,25374,25357,27624,27391,27229,25308,24733,25261,27173,24378,21810,23847,23976,22210,22184,21677,23753,23718,20235,18413,20288,19810,17426,18061,18025,23356,21293,20814,23165,20634,23172,20485,19355,17309,19326,18783,16657,16882,17190,16647,19159,18678,18477,16149,16358,16130,14124,13733,16050,13899,16040,15463,15586,10111,10000,9684,12257,12026,11346,9304,15158,13191,12986,15092,12336,9043,11261,9116,11224,11018,10631,8519,8729,10914,8770,8418,7477,5524,8011,7623,7467,7389,7719,4092,3379,1801,3766,3093,3683,1546,3780,4978,4406,6640,6920,6303,4119,4685,6890,4142,2937,1022,2364,2947,876,2749,615,2754,64834,65310,64797,64849,63367,65419,63329,63278,63362,62925,62753,64942,65117,64639,62588,62644,62680,62480,63049,63142,63084,62471,64550,64526,61243,59220,58719,58875,58771,58705,60790,61416,58636,59071,61181,61140,60976,58589,60625,61162,60484,62431,62262,62243,62409,63979,63885,62110,64242,62064,61471,61622,63610,64111,62156,61545,61577,60319,58226,60197,58252,57707,57669,59686,57794,59652,57878,57857,57440,55156,57168,56817,56662,54642,54620,54544,55151,55236,54695,56780,56927,57085,56922,56888,54524,56472,54991,54829,54502,54372,54376,51159,51034,50553,52734,51040,52525,50534,50474,50711,50238,52412,50200,52837,52335,50273,56123,54197,54098,54064,54168,55573,53530,54159,53741,53550,53702,55963,55832,53299,53827,53902,55850,55908,55535,53379,55309,55493,53321,55340,53324,55520,50100,51519,51473,49430,52039,50155,50093,52109,52097,52032,49550,49580,49779,51805,51921,51922,51283,51855,51205,49166,49188,46907,46870,46397,46526,48404,47084,46375,48386,46568,46748,48273,48837,46670,48834,46189,46180,48320,42973,44885,42968,44343,44411,44533,42480,42855,42915,44836,44808,42251,44563,44733,44786,42236,44052,44681,42638,44652,44038,42060,44136,46003,48052,46044,47475,45528,47471,45355,47665,47642,47832,45118,47354,47819,47757,41783,41969,43796,43382,43452,41240,41871,43853,41350,43276,41564,41485,43746,41570,43011,43053,41100,38866,38716,38776,38325,40342,40774,38656,38179,38181,38337,38318,38350,40232,40499,38013,37916,38597,40545,40554,40586,38560,38600,39973,36861,34716,36784,36149,34130,36740,34283,34054,34092,34116,34333,36566,33944,36399,34502,36047,35910,36012,35840,37751,39926,37820,39417,39292,39759,39717,37216,38967,36881,37572,36909,35711,33620,33175,33277,33635,35785,33774,33057,33097,35108,33339,33397,35474,34935,35039,35006,35527,35393,33380,34984,30679,32595,30706,30616,32177,30046,32212,32743,30470,32610,30051,32206,30090,32104,32502,32276,32504,29911,29779,31953,31770,32431,30413,29829,29801,31874,28536,25859,27914,28245,27838,27866,25620,26315,28168,25637,27817,31677,29566,29616,31159,31065,29180,31004,31120,29008,31649,31624,30981,29153,29128,30965,28789,28889,30942,30962,31373,30913,25532,24990,27559,27399,25549,27529,27470,27426,27492,25380,24931,24877,27110,24910,27286,24722,26836,27209,27206,25282,25256,22291,22490,23891,24061,21913,21872,21784,22479,22405,22281,22380,24043,21963,23949,21773,23822,24255,22261,24281,22074,22064,24267,22253,24069,21607,23560,20473,20410,18290,19835,18191,18346,19849,17774,19854,17983,18109,18133,19571,19509,17561,19696,20005,17643,17417,19692,23447,21459,21342,21268,21304,23448,22847,20767,23004,21015,23091,22547,21123,23269,23150,21222,23144,19346,16692,17349,17162,16706,16652,19162,19056,18583,16411,16897,16994,18954,18956,16463,18597,16577,18630,16426,18658,16586,18560,14334,16218,15741,14146,15619,13678,15780,14011,16085,15423,13957,15942,13962,15880,13390,12179,10104,12112,9531,11763,9718,12239,10091,12229,12105,12170,11657,9634,9674,11752,9981,11287,11290,11877,11785,11950,9451,11457,11308,15263,13144,14781,14776,12568,15267,13282,13258,14659,12887,15091,14875,14909,13010,12966,12906,14956,14496,11066,8567,10715,8467,10525,8505,8668,8995,9189,11246,8619,10603,8546,8830,10842,10323,10393,8278,10787,8928,8207,7607,7447,7672,8098,5386,5337,5138,7853,7809,5668,2041,3857,1886,1535,1341,3940,1291,1475,3331,3394,3436,3743,1555,3769,1566,3255,3153,3134,3188,3160,3724,3688,3083,1229,7160,6578,5034,4671,4730,4189,6321,6698,4271,3037,2934,3030,2453,500,400,2922,3018,3040,2383,2583,2618,732,63,2099,2070,2627,521,2598,616,704,99,165,2049,238,2112]},
+  "5X5_50": {size:5, p:[12209475,31717657,5304610,16542216,5327579,2881490,19671059,18738068,15900365,13549658,12784124,6104383,1692910,27365017,197463,28187776,23615655,21061008,17412667,16376343,13772170,11475903,9761630,21359905,6500316,5924493,3944820,31309241,29649293,31186372,30984337,29980556,29306673,28661047,28949573,25530389,23491923,24981246,23417570,24757133,22206426,22728801,19379720,20772390,19235278,18259333,18237032,17217529,17460954,17385512]},
+  "5X5_100": {size:5, p:[12209475,31717657,5304610,16542216,5327579,2881490,19671059,18738068,15900365,13549658,12784124,6104383,1692910,27365017,197463,28187776,23615655,21061008,17412667,16376343,13772170,11475903,9761630,21359905,6500316,5924493,3944820,31309241,29649293,31186372,30984337,29980556,29306673,28661047,28949573,25530389,23491923,24981246,23417570,24757133,22206426,22728801,19379720,20772390,19235278,18259333,18237032,17217529,17460954,17385512,14984987,15019398,14796788,15297466,13632693,10957938,10909711,12439584,11660760,11083997,9184270,10172099,8602745,7861624,7256098,8066165,7502418,5059158,4539020,1453005,1612503,17468405,5170604,31928730,30756326,23533182,22542819,12476071,8048307,6893267,339037,32955722,31867679,32811907,33372304,32300406,32320856,32748732,33129530,32527858,31514795,29824902,30262492,30656952,30563044,30499442,30947997,29426186,28172575,29061378]},
+  "5X5_250": {size:5, p:[12209475,31717657,5304610,16542216,5327579,2881490,19671059,18738068,15900365,13549658,12784124,6104383,1692910,27365017,197463,28187776,23615655,21061008,17412667,16376343,13772170,11475903,9761630,21359905,6500316,5924493,3944820,31309241,29649293,31186372,30984337,29980556,29306673,28661047,28949573,25530389,23491923,24981246,23417570,24757133,22206426,22728801,19379720,20772390,19235278,18259333,18237032,17217529,17460954,17385512,14984987,15019398,14796788,15297466,13632693,10957938,10909711,12439584,11660760,11083997,9184270,10172099,8602745,7861624,7256098,8066165,7502418,5059158,4539020,1453005,1612503,17468405,5170604,31928730,30756326,23533182,22542819,12476071,8048307,6893267,339037,32955722,31867679,32811907,33372304,32300406,32320856,32748732,33129530,32527858,31514795,29824902,30262492,30656952,30563044,30499442,30947997,29426186,28172575,29061378,28037246,27920694,28844023,28337159,28912295,27330977,26664567,27257938,26690526,26040879,27000605,26358213,24570870,24520194,24494362,24472277,24369282,23263725,24189644,23132932,21467364,21890321,22843407,21858825,21679309,22674462,22570800,22619133,21607584,20993126,20263802,20213921,20156765,20047476,18797380,17250558,17606829,18580851,18363546,16233191,15474173,15901228,15448076,14128412,13071817,14008502,13821151,13742737,13209905,13136446,12503842,12016370,11443956,10799483,10493774,10462008,10478031,8792730,8550246,10025483,10047366,8483875,8475544,7834143,6696185,7707134,6667064,7597802,7526273,6955766,6336986,6896698,6289965,4624755,5040374,5005979,5950846,5922257,4410146,4944250,4818911,4776045,3132984,3524385,3974030,2395400,2899867,2704871,2100421,1039869,1044569,1309630,1296704,168997,760206,748156,1155358,1059334,118486,571715,19828641,13492712,13389746,3621346,29744930,27950494,26705208,26246934,25269352,22200167,22122380,20106895,18396625,16885252,15298605,11827409,11316265,9817233,10111692,7765015,6983107,5185720,4252899,3486432,2453962,2044146,33008674,33536368,33470985,32927331,33446460,31976417,32434291,31912777,32832517,33365443,33323988,33304861,32353409,31842248,31847887,31729056,31797827,32250643,33185530,33241709,32643245,32645561,31687643,32164420]},
+  "6X6_50": {size:6, p:[60601564505,64697517934,62930818354,14735440225,11266068970,10493227415,50892946954,32039177573,55703165698,52563850435,49962781468,49165258152,38380662841,32517411576,30749846537,25039348513,66038142523,63000817264,55823888157,49383802114,45400121929,41196247219,36799989886,27292492556,23140483035,15446272879,16690673342,6635354836,5855467447,6069454926,1553575248,67012397122,67308260649,65239103837,63559812628,62905565579,53081543009,47494322495,46424953567,44933599691,41865541108,42862139246,42587887173,39729001092,38472684976,37173659877,35814010115,32739204949,31627916224,29012554987]},
+  "6X6_100": {size:6, p:[60601564505,64697517934,62930818354,14735440225,11266068970,10493227415,50892946954,32039177573,55703165698,52563850435,49962781468,49165258152,38380662841,32517411576,30749846537,25039348513,66038142523,63000817264,55823888157,49383802114,45400121929,41196247219,36799989886,27292492556,23140483035,15446272879,16690673342,6635354836,5855467447,6069454926,1553575248,67012397122,67308260649,65239103837,63559812628,62905565579,53081543009,47494322495,46424953567,44933599691,41865541108,42862139246,42587887173,39729001092,38472684976,37173659877,35814010115,32739204949,31627916224,29012554987,27768748843,26073713719,24383715399,19977763488,19334806928,18219720097,17108011162,15901506982,15660368498,13300241619,13676944781,14693313458,12953579723,7116597128,4355237654,2282801293,56668982699,56945019724,53745951781,25331151344,23216776266,10708804855,67821723769,66634869251,64455548548,63275047870,64242712648,63750712000,62577764275,62148798799,61496336109,61987954526,61362972136,58556063988,57838002313,54941104469,55363321352,54816306073,51858487024,49856542144,50270368920,51107191831,49172376414,45914415250,45270579180,45764748499,45173219056,43968663579,43946883201,43370220541]},
+  "7X7_50": {size:7, p:[76171894352874,61332628143785,214042524730800,197027137858919,125924311407443,368335719582755,98030533564271,429621903288393,261622586331843,150859063567233,24182225770206,558221707139019,376141035695646,215190468802764,145142432951400,109804943002320,96891192459497,558812866178596,477636462321422,438728310095321,434167140334636,407192814061125,403360515802024,355221582040751,306464204497134,236688059128141,221941717148856,207081171122703,150694088484446,114986012133839,96980941470105,29513832488134,4751790016562,434804069955106,347235283339745,539196521497721,531606732858363,517596386376631,506575249421349,467700380060055,471886158545081,464068368930642,444398131450631,423409289757720,411628257804671,404062855473685,353827344586747,354708925416772,317525720159355,310792654073400]},
+};
+
+function getPattern(dictName, id) {
+  const d = ARUCO_DICTS[dictName];
+  if (!d || id < 0 || id >= d.p.length) return null;
+  return {size: d.size, bits: d.p[id]};
+}
+
+function drawTag(ctx, id, x, y, size, dictName) {
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x, y, size, size);
+
+  const pattern = getPattern(dictName, id);
+  if (!pattern) {
+    // ID out of range for this dictionary
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(x + size*0.05, y + size*0.05, size*0.9, size*0.9);
+    ctx.fillStyle = '#cc0000';
+    ctx.font = `bold ${size*0.18}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`ID ${id}`, x + size/2, y + size/2 - size*0.08);
+    ctx.font = `${size*0.12}px monospace`;
+    ctx.fillStyle = '#888888';
+    ctx.fillText('out of range', x + size/2, y + size/2 + size*0.12);
+    return;
+  }
+
+  const markerSize  = pattern.size;   // inner grid (4, 5, 6 or 7)
+  // Layout: quiet zone (1 cell white) + black border (1 cell) + NxN data
+  // Total cells including quiet zone = markerSize + 4
+  const totalCellsWithQuiet = markerSize + 4; // 1 quiet + 1 border each side
+  const cellSize   = size / totalCellsWithQuiet;
+  const totalBits  = markerSize * markerSize;
+
+  // White quiet zone — fill entire area white
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x, y, size, size);
+
+  // Black border — 1 cell inset from quiet zone edge
+  const blackX = x + cellSize;
+  const blackY = y + cellSize;
+  const blackS = size - 2 * cellSize;
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(blackX, blackY, blackS, blackS);
+
+  // Inner NxN data cells — 2 cells inset (quiet + border)
+  for (let row = 0; row < markerSize; row++) {
+    for (let col = 0; col < markerSize; col++) {
+      const bitIdx  = row * markerSize + col;
+      const isBlack = (pattern.bits >> (totalBits - 1 - bitIdx)) & 1;
+      ctx.fillStyle = isBlack ? '#000000' : '#ffffff';
+      ctx.fillRect(
+        x + (col + 2) * cellSize,
+        y + (row + 2) * cellSize,
+        cellSize, cellSize
+      );
+    }
+  }
+}
+
+function renderPage(id, paper, tagMm, dpi, dictName) {
+  const [pw, ph] = PAPER_SIZES[paper];
+  const pageW = mmToPx(pw, dpi);
+  const pageH = mmToPx(ph, dpi);
+  const tagPx = mmToPx(tagMm, dpi);
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = pageW;
+  canvas.height = pageH;
+  const ctx = canvas.getContext('2d');
+
+  // White page
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, pageW, pageH);
+
+  // Centred tag
+  const tx = Math.round((pageW - tagPx) / 2);
+  const ty = Math.round((pageH - tagPx) / 2 - mmToPx(8, dpi));
+
+  drawTag(ctx, id, tx, ty, tagPx, dictName);
+
+  // Label
+  const fontSize = Math.max(10, mmToPx(7, dpi));
+  ctx.fillStyle = '#111111';
+  ctx.font = `${fontSize}px "Courier New", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const labelY = ty + tagPx + mmToPx(5, dpi);
+  ctx.fillText(`ArUco  DICT_${dictName}  ID ${id}`, pageW / 2, labelY);
+
+  // Corner crop marks
+  const markLen = mmToPx(5, dpi);
+  const markOff = mmToPx(10, dpi);
+  ctx.strokeStyle = '#cccccc';
+  ctx.lineWidth   = 1;
+  const corners = [
+    [tx, ty], [tx + tagPx, ty],
+    [tx, ty + tagPx], [tx + tagPx, ty + tagPx],
+  ];
+  corners.forEach(([cx, cy]) => {
+    const dx = cx === tx ? 1 : -1;
+    const dy = cy === ty ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(cx - dx * markOff, cy);
+    ctx.lineTo(cx - dx * (markOff + markLen), cy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - dy * markOff);
+    ctx.lineTo(cx, cy - dy * (markOff + markLen));
+    ctx.stroke();
+  });
+
+  // Size annotation (bottom of tag area)
+  ctx.fillStyle = '#888888';
+  ctx.font = `${Math.max(8, mmToPx(5, dpi))}px "Courier New", monospace`;
+  ctx.textAlign = 'left';
+  ctx.fillText(`${tagMm} mm`, tx, ty + tagPx + mmToPx(5 + 9, dpi));
+
+  return canvas;
+}
+
+function renderPage4up(ids4, paper, tagMm, dpi, dictName) {
+  const [pw, ph] = PAPER_SIZES[paper];
+  const pageW = mmToPx(pw, dpi);
+  const pageH = mmToPx(ph, dpi);
+  const margin = mmToPx(10, dpi);
+  const gap    = mmToPx(5, dpi);
+
+  const tagPx = Math.min(
+    Math.floor((pageW - 2*margin - gap) / 2),
+    Math.floor((pageH - 2*margin - gap) / 2)
+  );
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = pageW;
+  canvas.height = pageH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, pageW, pageH);
+
+  const positions = [
+    [margin,             margin],
+    [margin + tagPx + gap, margin],
+    [margin,             margin + tagPx + gap],
+    [margin + tagPx + gap, margin + tagPx + gap],
+  ];
+
+  ids4.forEach((id, i) => {
+    if (id == null) return;
+    const [tx, ty] = positions[i];
+    drawTag(ctx, id, tx, ty, tagPx, dictName);
+    const fontSize = Math.max(8, mmToPx(5, dpi));
+    ctx.fillStyle = '#333333';
+    ctx.font = `${fontSize}px "Courier New", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`DICT_${dictName}  ID ${id}`, tx + tagPx/2, ty + tagPx + mmToPx(2, dpi));
+  });
+
+  return canvas;
+}
+
+function renderPage2up(ids2, paper, tagMm, dpi, dictName) {
+  const [pw, ph] = PAPER_SIZES[paper];
+  const pageW = mmToPx(pw, dpi);
+  const pageH = mmToPx(ph, dpi);
+  const margin = mmToPx(10, dpi);
+  const gap    = mmToPx(8, dpi);
+
+  const tagPx = Math.min(
+    Math.floor(pageW - 2*margin),
+    Math.floor((pageH - 2*margin - gap) / 2)
+  );
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = pageW;
+  canvas.height = pageH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, pageW, pageH);
+
+  [[0, margin], [1, margin + tagPx + gap]].forEach(([idx, ty]) => {
+    if (!ids2[idx]) return;
+    const tx = Math.round((pageW - tagPx) / 2);
+    drawTag(ctx, ids2[idx], tx, ty, tagPx, dictName);
+    const fontSize = Math.max(8, mmToPx(5, dpi));
+    ctx.fillStyle = '#333333';
+    ctx.font = `${fontSize}px "Courier New", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`DICT_${dictName}  ID ${ids2[idx]}`, pageW/2, ty + tagPx + mmToPx(2, dpi));
+  });
+
+  return canvas;
+}
+
+// ── Generate ──────────────────────────────────────────────────────
+function generate() {
+  if (selectedIds.size === 0) {
+    setStatus('error', 'No tag IDs selected'); return;
+  }
+
+  const dictName = document.getElementById('sel-dict').value;
+  const paper    = document.getElementById('sel-paper').value;
+  const tagMm    = parseInt(document.getElementById('size-slider').value);
+  const dpi      = parseInt(document.getElementById('sel-dpi').value);
+  const perPage  = parseInt(document.getElementById('sel-perpage').value);
+
+  const [pw] = PAPER_SIZES[paper];
+  if (tagMm > pw * 0.95) {
+    setStatus('error', `Tag size ${tagMm}mm too large for ${paper} (max ~${Math.floor(pw*0.95)}mm)`);
+    return;
+  }
+
+  setStatus('info', 'Rendering…');
+
+  // Defer to allow UI repaint
+  setTimeout(() => {
+    const sortedIds = [...selectedIds].sort((a,b) => a-b);
+    pages = [];
+
+    if (perPage === 1) {
+      sortedIds.forEach(id => {
+        pages.push(renderPage(id, paper, tagMm, dpi, dictName));
+      });
+    } else if (perPage === 2) {
+      for (let i = 0; i < sortedIds.length; i += 2) {
+        pages.push(renderPage2up([sortedIds[i], sortedIds[i+1]], paper, tagMm, dpi, dictName));
+      }
+    } else {
+      for (let i = 0; i < sortedIds.length; i += 4) {
+        pages.push(renderPage4up(sortedIds.slice(i, i+4), paper, tagMm, dpi, dictName));
+      }
+    }
+
+    currentPage = 0;
+    showPage(0);
+
+    // Info strip
+    document.getElementById('info-dict').textContent  = `DICT_${dictName}`;
+    document.getElementById('info-ids').textContent   = _idsDisplay(sortedIds);
+    document.getElementById('info-paper').textContent = paper;
+    document.getElementById('info-size').textContent  = tagMm;
+    document.getElementById('info-dpi').textContent   = dpi;
+    document.getElementById('info-pages').textContent = pages.length;
+    document.getElementById('preview-info').style.display = 'flex';
+
+    document.getElementById('btn-download').classList.add('visible');
+    setStatus('ok', `Generated ${pages.length} page${pages.length>1?'s':''} · ${sortedIds.length} tag${sortedIds.length>1?'s':''}`);
+  }, 20);
+}
+
+function showPage(idx) {
+  if (pages.length === 0) return;
+  idx = Math.max(0, Math.min(pages.length - 1, idx));
+  currentPage = idx;
+
+  const srcCanvas = pages[idx];
+  const wrap = document.getElementById('canvas-wrap');
+  const dst  = document.getElementById('preview-canvas');
+
+  // Available space inside the wrap (minus padding)
+  const pad   = 24;
+  const availW = wrap.clientWidth  - pad * 2;
+  const availH = wrap.clientHeight - pad * 2;
+
+  // Scale to fit, preserving aspect ratio
+  const scale = Math.min(availW / srcCanvas.width, availH / srcCanvas.height, 1);
+  const dispW = Math.round(srcCanvas.width  * scale);
+  const dispH = Math.round(srcCanvas.height * scale);
+
+  // Draw source (full-res) into display canvas (fitted size)
+  dst.width  = dispW;
+  dst.height = dispH;
+  const dctx = dst.getContext('2d');
+  dctx.imageSmoothingEnabled = true;
+  dctx.imageSmoothingQuality = 'high';
+  dctx.drawImage(srcCanvas, 0, 0, dispW, dispH);
+
+  document.getElementById('placeholder').style.display = 'none';
+  dst.style.display = 'block';
+
+  document.getElementById('page-indicator').textContent = `${idx+1} / ${pages.length}`;
+  document.getElementById('btn-prev').disabled = idx === 0;
+  document.getElementById('btn-next').disabled = idx === pages.length - 1;
+}
+
+// Re-fit on window resize
+window.addEventListener('resize', () => { if (pages.length > 0) showPage(currentPage); });
+
+function changePage(delta) {
+  showPage(currentPage + delta);
+}
+
+// ── PDF download (uses canvas2pdf via jsPDF) ──────────────────────
+function downloadPDF() {
+  if (pages.length === 0) return;
+
+  const paper    = document.getElementById('sel-paper').value;
+  const dictName = document.getElementById('sel-dict').value;
+  const dpi      = parseInt(document.getElementById('sel-dpi').value);
+
+  setStatus('info', 'Building PDF…');
+
+  // Use jsPDF from CDN
+  const script = document.createElement('script');
+  script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  script.onload = () => {
+    const { jsPDF } = window.jspdf;
+    const [pw, ph] = PAPER_SIZES[paper];
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: [pw, ph],
+    });
+
+    pages.forEach((srcCanvas, i) => {
+      if (i > 0) doc.addPage([pw, ph], 'portrait');
+      const imgData = srcCanvas.toDataURL('image/jpeg', 0.95);
+      doc.addImage(imgData, 'JPEG', 0, 0, pw, ph);
+    });
+
+    const sortedIds = [...selectedIds].sort((a,b) => a-b);
+    const fname = `aruco_tags_${sortedIds.join('_')}_DICT${dictName}.pdf`;
+    doc.save(fname);
+    setStatus('ok', `Downloaded: ${fname}`);
+  };
+  script.onerror = () => {
+    // Fallback: download current page as PNG
+    const a = document.createElement('a');
+    const sortedIds = [...selectedIds].sort((a,b) => a-b);
+    a.download = `aruco_tags_${sortedIds.join('_')}_DICT${dictName}_p${currentPage+1}.png`;
+    a.href = pages[currentPage].toDataURL('image/png');
+    a.click();
+    setStatus('ok', 'Downloaded page as PNG (jsPDF not available)');
+  };
+  document.head.appendChild(script);
+}
+
+// ── CLI command generator ─────────────────────────────────────────
+function updateCliCommand() {
+  // Could add a "copy CLI command" feature later
+}
+
+// ── Logo easter egg ──────────────────────────────────────────────
+// The header logo shows the ArUco tag for the current day of the week.
+// Day 0 (Sun) → Tag 0, Day 1 (Mon) → Tag 1, … Day 6 (Sat) → Tag 6.
+// Click the logo to load that tag ID into the generator.
+
+const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function drawLogoTag() {
+  const canvas  = document.getElementById('logo-tag');
+  if (!canvas) return;
+  const ctx     = canvas.getContext('2d');
+  const day     = new Date().getDay();   // 0=Sun … 6=Sat
+  const dictName = '4X4_1000';
+  const size    = canvas.width;
+
+  // Draw the tag at canvas resolution
+  const pattern = getPattern(dictName, day);
+  if (!pattern) return;
+
+  // quiet(1) + border(1) + NxN + border(1) + quiet(1) = size + 4 cells
+  const total    = pattern.size + 4;
+  const cell     = size / total;
+  const totalBits = pattern.size * pattern.size;
+
+  // White quiet zone
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+
+  // Black border (1 cell inset)
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(cell, cell, size - 2 * cell, size - 2 * cell);
+
+  // Inner cells (2 cells inset)
+  for (let row = 0; row < pattern.size; row++) {
+    for (let col = 0; col < pattern.size; col++) {
+      const bitIdx  = row * pattern.size + col;
+      const isBlack = (pattern.bits >> (totalBits - 1 - bitIdx)) & 1;
+      ctx.fillStyle = isBlack ? '#000000' : '#ffffff';
+      ctx.fillRect(
+        (col + 2) * cell,
+        (row + 2) * cell,
+        cell, cell
+      );
+    }
+  }
+
+  // Tooltip: day name + tag ID
+  canvas.title = `Today is ${DAY_NAMES[day]} — Tag ID ${day} · Click to add`;
+
+}
+
+let _logoClickCount = 0;
+const _EASTER_MSGS = [
+  "Tag ID {day} — it\'s {name}! Added to selection.",
+  "Happy {name}! Tag {day} is yours.",
+  "{name} vibes. Tag {day} loaded.",
+  "The robots run on {name}s too. Tag {day} added.",
+  "Tag {day} — because every {name} needs an ArUco marker.",
+  "Still {name}. Still tag {day}. Still clicking.",
+  "You found the easter egg. Tag {day}. Go print it.",
+];
+
+function logoClick() {
+  const day  = new Date().getDay();
+  const name = DAY_NAMES[day];
+  selectedIds.add(day);
+  updateStatus();
+
+  // Rotate through easter egg messages
+  const template = _EASTER_MSGS[_logoClickCount % _EASTER_MSGS.length];
+  _logoClickCount++;
+  const msg = template.replace('{day}', day).replace(/{name}/g, name);
+  setStatus('ok', msg);
+
+  // Brief flash animation on the canvas
+  const canvas = document.getElementById('logo-tag');
+  canvas.style.transform = 'scale(1.25)';
+  canvas.style.transition = 'transform 0.15s ease';
+  setTimeout(() => { canvas.style.transform = 'scale(1)'; }, 150);
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+_applyConventionStyles();
+autoSize();
+updateCustomIdRange();
+updateStatus();
+// Draw logo after ARUCO_DICTS is available (same script block, so safe)
+drawLogoTag();
+</script>
+</body>
+</html>

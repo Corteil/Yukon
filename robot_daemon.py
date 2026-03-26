@@ -155,12 +155,23 @@ class RobotState:
     lidar:       LidarScan   = field(default_factory=LidarScan)
     system:      SystemState = field(default_factory=SystemState)
     rc_active:   bool        = False
+    # Legacy single-camera flags (kept for backward compatibility with frontends)
     camera_ok:   bool        = False
+    aruco_ok:    bool        = False
+    # Per-camera status for triple-camera setup
+    cam_front_left_ok:  bool = False
+    cam_front_right_ok: bool = False
+    cam_rear_ok:        bool = False
+    cam_front_left_recording:  bool = False
+    cam_front_right_recording: bool = False
+    cam_rear_recording:        bool = False
+    # Gate confirmation: rear camera saw the gate we just passed
+    gate_confirmed:     bool = False
+    current_gate_id:    int  = 0
     lidar_ok:    bool        = False
     gps_ok:      bool        = False
-    aruco_ok:    bool        = False
     gps_logging:    bool        = False
-    cam_recording:  bool        = False
+    cam_recording:  bool        = False   # True if any camera is recording
     data_logging:   bool        = False
     speed_scale:    float       = 0.25   # current speed limit scale (0.0–1.0)
     nav_state:   str         = "IDLE" # Navigator state name
@@ -498,52 +509,104 @@ _CV2_ROTATIONS = {
 
 
 class _Camera:
-    """Captures frames from Pi camera (picamera2) or OpenCV fallback.
+    """Captures frames from a camera using Picamera2 (CSI) or OpenCV (USB/UVC).
 
-    Optionally applies rotation (0/90/180/270 degrees) and runs ArUco
-    marker + gate detection on every captured frame.
+    Supports two capture paths selected by the ``driver`` parameter:
+      - ``picamera2`` : IMX296 global-shutter cameras on CSI ports (CAM0/CAM1).
+                        ``camera_num`` selects which CSI port.
+      - ``opencv``    : Any UVC/USB camera; addressed by ``device`` path.
+      - ``auto``      : Tries Picamera2 first, falls back to OpenCV.
+
+    Capture resolution (capture_width × capture_height) is used for ArUco
+    detection and recording to maximise tag detection range.  Display frames
+    are downscaled to display_width × display_height before being stored for
+    the UI and MJPEG streams, keeping render cost manageable.
+
+    ``mirror`` flips frames horizontally — useful for rear-facing cameras so
+    the feed feels natural when reviewed.
     """
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
-                 rotation: int = 0,
-                 enable_aruco: bool = False,
-                 aruco_dict:   str  = "DICT_4X4_1000",
-                 calib_file:   str  = None,
-                 tag_size:     float = 0.15,
+    def __init__(self,
+                 # Driver selection
+                 driver:          str   = 'auto',        # 'picamera2' | 'opencv' | 'auto'
+                 camera_num:      int   = 0,              # Picamera2: CSI port index
+                 device:          str   = '/dev/video0',  # OpenCV: UVC device path
+                 # Capture resolution (full sensor — used for ArUco + recording)
+                 capture_width:   int   = 640,
+                 capture_height:  int   = 480,
+                 # Display resolution (downscaled — sent to UI and MJPEG)
+                 display_width:   int   = 640,
+                 display_height:  int   = 480,
+                 fps:             int   = 30,
+                 rotation:        int   = 0,
+                 mirror:          bool  = False,
+                 enable_aruco:    bool  = False,
+                 aruco_dict:      str   = 'DICT_4X4_1000',
+                 calib_file:      str   = None,
+                 tag_size:        float = 0.15,
                  max_rec_minutes: float = 0.0,
-                 rec_dir:      str  = ''):
-        self._w             = width
-        self._h             = height
-        self._fps           = fps
-        self._rotation      = rotation
-        self._aruco_dict    = aruco_dict
-        self._calib_file    = calib_file
-        self._tag_size      = tag_size
-        self._aruco_enabled = enable_aruco
-        self._frame        = None
-        self._aruco_state  = None   # ArUcoState or None
-        self._lock         = threading.Lock()
-        self._stop         = threading.Event()
-        self._ok           = False
-        self._aruco_ok     = False
-        self._writer       = None   # cv2.VideoWriter or None
-        self._rec_lock     = threading.Lock()
-        self._rec_path     = ""
-        self._rec_start    = 0.0
-        self._max_rec_s    = max_rec_minutes * 60.0 if max_rec_minutes > 0 else 0.0
-        self._rec_dir      = rec_dir
+                 rec_dir:         str   = '',
+                 name:            str   = 'camera'):      # label for log messages
+        self._driver         = driver.lower()
+        self._camera_num     = camera_num
+        self._device         = device
+        self._capture_w      = capture_width
+        self._capture_h      = capture_height
+        self._display_w      = display_width
+        self._display_h      = display_height
+        self._fps            = fps
+        self._rotation       = rotation
+        self._mirror         = mirror
+        self._aruco_dict     = aruco_dict
+        self._calib_file     = calib_file
+        self._tag_size       = tag_size
+        self._aruco_enabled  = enable_aruco
+        self._name           = name
+        self._frame          = None   # display-resolution RGB frame
+        self._aruco_state    = None   # ArUcoState or None
+        self._lock           = threading.Lock()
+        self._stop           = threading.Event()
+        self._ok             = False
+        self._aruco_ok       = False
+        self._writer         = None   # cv2.VideoWriter or None
+        self._rec_lock       = threading.Lock()
+        self._rec_path       = ''
+        self._rec_start      = 0.0
+        self._max_rec_s      = max_rec_minutes * 60.0 if max_rec_minutes > 0 else 0.0
+        self._rec_dir        = rec_dir
+
+    # ── backward-compat properties (single-camera callers use _w/_h) ─────────
+    @property
+    def _w(self):
+        return self._display_w
+
+    @property
+    def _h(self):
+        return self._display_h
 
     def start(self):
-        threading.Thread(target=self._run, daemon=True, name="camera").start()
+        threading.Thread(target=self._run, daemon=True,
+                         name=f"camera-{self._name}").start()
 
     def _run(self):
-        try:
-            self._run_picamera2()
-        except (ImportError, OSError):
+        if self._driver == 'picamera2':
+            try:
+                self._run_picamera2()
+            except Exception as e:
+                log.warning(f"{self._name}: Picamera2 failed ({e}) — no fallback")
+        elif self._driver == 'opencv':
             try:
                 self._run_opencv()
             except Exception as e:
-                log.warning(f"Camera unavailable: {e}")
+                log.warning(f"{self._name}: OpenCV camera unavailable: {e}")
+        else:  # 'auto'
+            try:
+                self._run_picamera2()
+            except (ImportError, OSError):
+                try:
+                    self._run_opencv()
+                except Exception as e:
+                    log.warning(f"{self._name}: Camera unavailable: {e}")
 
     def _rotate(self, frame, cv2):
         """Apply configured rotation using cv2.rotate (no-op if 0)."""
@@ -556,61 +619,79 @@ class _Camera:
         return cv2.rotate(frame, code) if code is not None else frame
 
     def _make_detector(self):
-        """Initialise the ArucoDetector; return None on failure."""
+        """Initialise the ArucoDetector using capture resolution. Return None on failure."""
         try:
             from robot.aruco_detector import ArucoDetector
-            # Substitute {width}/{height} placeholders so robot.ini can use
-            # a template like camera_cal_{width}x{height}.npz and the right
-            # file is selected automatically for the configured resolution.
             calib = (self._calib_file
-                     .replace('{width}',  str(self._w))
-                     .replace('{height}', str(self._h))
+                     .replace('{capture_width}',  str(self._capture_w))
+                     .replace('{capture_height}', str(self._capture_h))
+                     .replace('{width}',           str(self._capture_w))
+                     .replace('{height}',          str(self._capture_h))
                      ) if self._calib_file else None
             if calib and not os.path.exists(calib):
-                log.warning(f"Calibration file not found: {calib} — pose estimation disabled. "
-                            f"Run tools/derive_calibrations.py to generate it.")
+                log.warning(f"{self._name}: calibration file not found: {calib} — "
+                            f"pose estimation disabled. Run tools/derive_calibrations.py.")
                 calib = None
             det = ArucoDetector(
                 dict_name  = self._aruco_dict,
                 calib_file = calib,
                 tag_size   = self._tag_size,
             )
-            log.info(f"ArUco detector ready ({self._aruco_dict}"
+            log.info(f"{self._name}: ArUco detector ready ({self._aruco_dict}"
                      f"{f', calibrated ({calib})' if calib else ''})")
             return det
         except Exception as e:
-            log.warning(f"ArUco detector init failed: {e}")
+            log.warning(f"{self._name}: ArUco detector init failed: {e}")
             return None
+
+    def _process_frame(self, frame, detector, cv2):
+        """Shared per-frame pipeline for both capture paths.
+
+        1. Mirror (horizontal flip for rear camera)
+        2. Rotate
+        3. Run ArUco on full capture-resolution frame
+        4. Downscale to display resolution for UI / MJPEG
+
+        Returns (display_frame, aruco_state).
+        """
+        if self._mirror:
+            frame = cv2.flip(frame, 1)
+        frame = self._rotate(frame, cv2)
+        aruco_state = None
+        if detector is not None and self._aruco_enabled:
+            try:
+                aruco_state = detector.detect(frame)
+            except Exception as e:
+                log.debug(f"{self._name}: ArUco detect error: {e}")
+        if (self._capture_w != self._display_w or
+                self._capture_h != self._display_h):
+            display = cv2.resize(frame, (self._display_w, self._display_h),
+                                 interpolation=cv2.INTER_AREA)
+        else:
+            display = frame
+        return display, aruco_state
 
     def _run_picamera2(self):
         import cv2
         from picamera2 import Picamera2
-        cam = Picamera2()
+        cam = Picamera2(camera_num=self._camera_num)
         cam.configure(cam.create_video_configuration(
-            main={"size": (self._w, self._h), "format": "RGB888"}
+            main={"size": (self._capture_w, self._capture_h), "format": "RGB888"},
+            controls={"FrameRate": self._fps},
         ))
         cam.start()
         self._ok = True
+        log.info(f"{self._name}: Picamera2 started (CAM{self._camera_num}, "
+                 f"{self._capture_w}×{self._capture_h} @ {self._fps} fps)")
         detector = self._make_detector()
-        _last_aruco_err = None
         period   = 1.0 / self._fps
         deadline = time.monotonic() + period
         try:
             while not self._stop.is_set():
                 frame = cam.capture_array()[:, :, ::-1]  # BGR → RGB
-                frame = self._rotate(frame, cv2)
-                aruco_state = None
-                if detector is not None and self._aruco_enabled:
-                    try:
-                        aruco_state = detector.detect(frame)
-                        _last_aruco_err = None
-                    except Exception as e:
-                        msg = str(e)
-                        if msg != _last_aruco_err:
-                            log.warning(f"ArUco detect error: {e}")
-                            _last_aruco_err = msg
+                display, aruco_state = self._process_frame(frame, detector, cv2)
                 with self._lock:
-                    self._frame       = frame
+                    self._frame       = display
                     self._aruco_state = aruco_state
                     self._aruco_ok    = aruco_state is not None
                 self._record_frame(frame)
@@ -618,42 +699,39 @@ class _Camera:
                 if remaining > 0:
                     time.sleep(remaining)
                 else:
-                    deadline = time.monotonic()  # fell behind — reset, don't catch up
+                    deadline = time.monotonic()
                 deadline += period
         finally:
             cam.stop()
             self._ok       = False
             self._aruco_ok = False
+            log.info(f"{self._name}: Picamera2 stopped")
 
     def _run_opencv(self):
         import cv2
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._h)
+        device = self._device
+        if not os.path.exists(device):
+            log.warning(f"{self._name}: device {device!r} not found — trying /dev/video0")
+            device = '/dev/video0'
+        cap = cv2.VideoCapture(device)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._capture_w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._capture_h)
         cap.set(cv2.CAP_PROP_FPS,          self._fps)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         if not cap.isOpened():
-            raise RuntimeError("No camera found")
+            raise RuntimeError(f"{self._name}: cannot open {device!r}")
         self._ok = True
+        log.info(f"{self._name}: OpenCV camera opened ({device}, "
+                 f"{self._capture_w}×{self._capture_h} @ {self._fps} fps)")
         detector = self._make_detector()
-        _last_aruco_err = None
         try:
             while not self._stop.is_set():
                 ret, frame = cap.read()
                 if ret:
                     frame = frame[:, :, ::-1]   # BGR → RGB
-                    frame = self._rotate(frame, cv2)
-                    aruco_state = None
-                    if detector is not None and self._aruco_enabled:
-                        try:
-                            aruco_state = detector.detect(frame)
-                            _last_aruco_err = None
-                        except Exception as e:
-                            msg = str(e)
-                            if msg != _last_aruco_err:
-                                log.warning(f"ArUco detect error: {e}")
-                                _last_aruco_err = msg
+                    display, aruco_state = self._process_frame(frame, detector, cv2)
                     with self._lock:
-                        self._frame       = frame
+                        self._frame       = display
                         self._aruco_state = aruco_state
                         self._aruco_ok    = aruco_state is not None
                     self._record_frame(frame)
@@ -661,6 +739,7 @@ class _Camera:
             cap.release()
             self._ok       = False
             self._aruco_ok = False
+            log.info(f"{self._name}: OpenCV camera closed")
 
     def get_frame(self):
         """Return latest camera frame (numpy array, RGB) or None."""
@@ -706,12 +785,13 @@ class _Camera:
         with self._rec_lock:
             if self._writer is not None:
                 return False          # already recording
-            # Determine actual frame size (may differ from configured if rotated 90/270)
+            # Frame size for recording uses capture resolution.
+            # 90/270° rotation swaps width and height.
             if self._rotation in (90, 270):
-                w, h = self._h, self._w
+                w, h = self._capture_h, self._capture_w
             else:
-                w, h = self._w, self._h
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                w, h = self._capture_w, self._capture_h
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264; falls back to mp4v
             writer = cv2.VideoWriter(path, fourcc, self._fps, (w, h))
             if not writer.isOpened():
                 writer.release()
@@ -752,8 +832,8 @@ class _Camera:
                 ts_str   = time.strftime("%Y%m%d_%H%M%S")
                 new_path = os.path.join(self._rec_dir, f"recording_{ts_str}.mp4")
                 os.makedirs(self._rec_dir, exist_ok=True)
-                w, h = (self._h, self._w) if self._rotation in (90, 270) else (self._w, self._h)
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                w, h = (self._capture_h, self._capture_w) if self._rotation in (90, 270) else (self._capture_w, self._capture_h)
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 writer = cv2.VideoWriter(new_path, fourcc, self._fps, (w, h))
                 if not writer.isOpened():
                     writer.release()
@@ -1341,14 +1421,23 @@ class Robot:
         self._fault_rotation_s = float(_ini.get('leds', 'fault_rotation_s', fallback='2.0'))
 
         # Subsystems (created in start())
-        self._yukon:         Optional[_YukonLink] = None
-        self._camera:        Optional[_Camera]    = None
-        self._lidar:         Optional[_Lidar]     = None
-        self._gps:           Optional[_Gps]       = None
-        self._system:        _System              = _System()
-        self._data_logger:   _DataLogger          = _DataLogger()
-        self._navigator:     Optional[object]     = None  # ArucoNavigator when available
-        self._gps_navigator: Optional[object]     = None  # GpsNavigator when available
+        self._yukon:            Optional[_YukonLink] = None
+        # Legacy single camera — kept for backward compat; None when triple-camera active
+        self._camera:           Optional[_Camera]    = None
+        # Triple camera system
+        self._cam_front_left:   Optional[_Camera]    = None
+        self._cam_front_right:  Optional[_Camera]    = None
+        self._cam_rear:         Optional[_Camera]    = None
+        # Gate confirmation state (rear camera)
+        self._gate_confirmed:   bool = False
+        self._gate_confirmed_ts: float = 0.0
+        self._current_gate_id:  int  = 0
+        self._lidar:            Optional[_Lidar]     = None
+        self._gps:              Optional[_Gps]       = None
+        self._system:           _System              = _System()
+        self._data_logger:      _DataLogger          = _DataLogger()
+        self._navigator:        Optional[object]     = None  # ArucoNavigator when available
+        self._gps_navigator:    Optional[object]     = None  # GpsNavigator when available
 
         # Shared state
         self._mode_lock   = threading.Lock()
@@ -1382,18 +1471,75 @@ class Robot:
                 log.warning(f"Yukon not available on {self._yukon_port} ({e}) — retrying in 3 s")
                 time.sleep(3)
 
-        if self._enable['camera']:
+        # ── Triple camera setup ───────────────────────────────────────────────
+        _ini_cam = configparser.ConfigParser(inline_comment_prefixes=('#',))
+        _ini_cam.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini'))
+
+        def _make_camera(section, name):
+            """Build a _Camera from a named [camera_*] ini section."""
+            if _ini_cam.getboolean(section, 'disabled', fallback=True):
+                return None
+            return _Camera(
+                driver          = _ini_cam.get(section, 'driver',          fallback='auto'),
+                camera_num      = _ini_cam.getint(section, 'camera_num',   fallback=0),
+                device          = _ini_cam.get(section, 'device',          fallback='/dev/video0'),
+                capture_width   = _ini_cam.getint(section, 'capture_width',  fallback=640),
+                capture_height  = _ini_cam.getint(section, 'capture_height', fallback=480),
+                display_width   = _ini_cam.getint(section, 'display_width',  fallback=640),
+                display_height  = _ini_cam.getint(section, 'display_height', fallback=480),
+                fps             = _ini_cam.getint(section, 'fps',           fallback=30),
+                rotation        = _ini_cam.getint(section, 'rotation',      fallback=0),
+                mirror          = _ini_cam.getboolean(section, 'mirror',    fallback=False),
+                enable_aruco    = (_ini_cam.getboolean(section, 'aruco', fallback=False)
+                                   and self._enable_aruco),
+                aruco_dict      = self._aruco_dict,
+                tag_size        = self._aruco_tag_size,
+                calib_file      = _ini_cam.get(section, 'calib_file', fallback='') or None,
+                max_rec_minutes = self._max_rec_minutes,
+                rec_dir         = self._rec_dir,
+                name            = name,
+            )
+
+        # Try triple-camera first; fall back to legacy [camera] section
+        _triple = not _ini_cam.getboolean('camera_front_left', 'disabled', fallback=True)
+        if _triple:
+            self._cam_front_left  = _make_camera('camera_front_left',  'front_left')
+            self._cam_front_right = _make_camera('camera_front_right', 'front_right')
+            self._cam_rear        = _make_camera('camera_rear',        'rear')
+            for cam in (self._cam_front_left, self._cam_front_right, self._cam_rear):
+                if cam:
+                    cam.start()
+            # Stereo sync: pulse GPIO to align both IMX296 frame counters
+            if (_ini_cam.getboolean('stereo', 'enabled', fallback=False) and
+                    self._cam_front_left and self._cam_front_right):
+                try:
+                    import RPi.GPIO as GPIO
+                    _sync_gpio = _ini_cam.getint('stereo', 'sync_gpio', fallback=24)
+                    GPIO.setmode(GPIO.BCM)
+                    GPIO.setup(_sync_gpio, GPIO.OUT, initial=GPIO.LOW)
+                    time.sleep(0.1)  # let both cameras reach steady state
+                    GPIO.output(_sync_gpio, GPIO.HIGH)
+                    time.sleep(0.001)
+                    GPIO.output(_sync_gpio, GPIO.LOW)
+                    log.info(f'Stereo sync pulse sent on GPIO {_sync_gpio}')
+                except Exception as e:
+                    log.warning(f'Stereo sync GPIO failed: {e}')
+        elif self._enable['camera']:
+            # Legacy single-camera fallback
             self._camera = _Camera(
-                width             = self._cam_width,
-                height            = self._cam_height,
-                fps               = self._cam_fps,
-                rotation          = self._cam_rotation,
-                enable_aruco      = self._enable_aruco,
-                aruco_dict        = self._aruco_dict,
-                calib_file        = self._aruco_calib,
-                tag_size          = self._aruco_tag_size,
-                max_rec_minutes   = self._max_rec_minutes,
-                rec_dir           = self._rec_dir,
+                capture_width   = self._cam_width,
+                capture_height  = self._cam_height,
+                display_width   = self._cam_width,
+                display_height  = self._cam_height,
+                fps             = self._cam_fps,
+                rotation        = self._cam_rotation,
+                enable_aruco    = self._enable_aruco,
+                aruco_dict      = self._aruco_dict,
+                calib_file      = self._aruco_calib,
+                tag_size        = self._aruco_tag_size,
+                max_rec_minutes = self._max_rec_minutes,
+                rec_dir         = self._rec_dir,
+                name            = 'camera',
             )
             self._camera.start()
 
@@ -1441,7 +1587,8 @@ class Robot:
         self._data_logger.stop()
         if self._yukon:
             self._yukon.close()
-        for sub in (self._camera, self._lidar, self._gps, self._system):
+        for sub in (self._cam_front_left, self._cam_front_right, self._cam_rear,
+                    self._camera, self._lidar, self._gps, self._system):
             if sub:
                 sub.stop()
         log.info("Robot stopped.")
@@ -1504,10 +1651,23 @@ class Robot:
             system    = self._system.get_state(),
             rc_active   = self._rc_active,
             speed_scale = self._speed_scale,
-            camera_ok = bool(self._camera and self._camera.ok),
+            # Legacy single-camera fields (backward compat)
+            camera_ok = bool((self._camera and self._camera.ok) or
+                             (self._cam_front_left and self._cam_front_left.ok)),
+            aruco_ok  = bool((self._camera and self._camera.aruco_ok) or
+                             (self._cam_front_left and self._cam_front_left.aruco_ok)),
+            # Per-camera status
+            cam_front_left_ok  = bool(self._cam_front_left  and self._cam_front_left.ok),
+            cam_front_right_ok = bool(self._cam_front_right and self._cam_front_right.ok),
+            cam_rear_ok        = bool(self._cam_rear        and self._cam_rear.ok),
+            cam_front_left_recording  = bool(self._cam_front_left  and self._cam_front_left.is_recording()),
+            cam_front_right_recording = bool(self._cam_front_right and self._cam_front_right.is_recording()),
+            cam_rear_recording        = bool(self._cam_rear        and self._cam_rear.is_recording()),
+            # Gate confirmation
+            gate_confirmed  = self._gate_confirmed,
+            current_gate_id = self._current_gate_id,
             lidar_ok  = bool(self._lidar  and self._lidar.ok),
             gps_ok    = bool(self._gps    and self._gps.ok),
-            aruco_ok    = bool(self._camera and self._camera.aruco_ok),
             gps_logging   = self._gps_logging,
             cam_recording = self.is_cam_recording(),
             data_logging  = self._data_logger.is_active(),
@@ -1531,58 +1691,120 @@ class Robot:
         """Return the GpsNavigator instance, or None if unavailable."""
         return self._gps_navigator
 
-    def get_frame(self):
-        """Return latest camera frame (numpy array, RGB) or None."""
-        return self._camera.get_frame() if self._camera else None
+    # ── Camera access — multi-camera API ─────────────────────────────────────
 
-    def get_aruco_state(self):
-        """Return latest :class:`~aruco_detector.ArUcoState` or None."""
-        return self._camera.get_aruco_state() if self._camera else None
+    _CAM_NAMES = ('front_left', 'front_right', 'rear')
+
+    def _cam(self, name: str = 'front_left') -> Optional['_Camera']:
+        """Return the named camera instance or None.
+        name: 'front_left' | 'front_right' | 'rear' | 'legacy'
+        Falls back to the legacy single camera when triple-camera is not active.
+        """
+        if name == 'front_left':  return self._cam_front_left  or self._camera
+        if name == 'front_right': return self._cam_front_right or self._camera
+        if name == 'rear':        return self._cam_rear
+        return self._camera
+
+    def get_frame(self, cam: str = 'front_left'):
+        """Return latest display-resolution RGB frame for *cam*, or None.
+        cam: 'front_left' | 'front_right' | 'rear'
+        """
+        c = self._cam(cam)
+        return c.get_frame() if c else None
+
+    def get_aruco_state(self, cam: str = 'front_left'):
+        """Return latest ArUcoState for *cam*, or None."""
+        c = self._cam(cam)
+        return c.get_aruco_state() if c else None
 
     def set_aruco_enabled(self, enabled: bool):
-        """Enable or disable ArUco detection at runtime."""
+        """Enable or disable ArUco detection on ALL cameras simultaneously."""
+        for name in self._CAM_NAMES:
+            c = self._cam(name)
+            if c:
+                c.set_aruco_enabled(enabled)
         if self._camera:
             self._camera.set_aruco_enabled(enabled)
 
     def toggle_aruco(self) -> bool:
-        """Toggle ArUco on/off. Returns the new enabled state."""
-        return self._camera.toggle_aruco() if self._camera else False
+        """Toggle ArUco on all cameras. Returns the new enabled state."""
+        # Derive new state from front-left (authoritative)
+        primary = self._cam_front_left or self._camera
+        new_state = not primary.get_aruco_enabled() if primary else False
+        self.set_aruco_enabled(new_state)
+        return new_state
 
     def get_aruco_enabled(self) -> bool:
-        """Return True if ArUco detection is currently enabled."""
-        return bool(self._camera and self._camera.get_aruco_enabled())
+        """Return True if ArUco detection is currently enabled (checks front-left)."""
+        c = self._cam_front_left or self._camera
+        return bool(c and c.get_aruco_enabled())
 
-    def set_cam_rotation(self, rotation: int):
-        """Change camera rotation at runtime (0, 90, 180, 270)."""
+    def set_cam_rotation(self, rotation: int, cam: str = 'all'):
+        """Change rotation at runtime. cam='all' applies to every camera."""
         self._cam_rotation = rotation % 360
+        targets = self._CAM_NAMES if cam == 'all' else (cam,)
+        for name in targets:
+            c = self._cam(name)
+            if c:
+                c.set_rotation(rotation)
         if self._camera:
             self._camera.set_rotation(rotation)
 
     def get_cam_rotation(self) -> int:
-        """Return the current camera rotation in degrees."""
-        return self._camera._rotation if self._camera else self._cam_rotation
+        """Return the current rotation of the front-left (or legacy) camera."""
+        c = self._cam_front_left or self._camera
+        return c._rotation if c else self._cam_rotation
 
-    def start_cam_recording(self, path: str = None) -> bool:
-        """Start recording the camera feed to *path* (auto-generated if None).
-
-        Files are saved to ``~/Videos/HackyRacingRobot/``.
-        Returns True if recording started successfully.
+    def start_cam_recording(self, cam: str = 'all', path: str = None) -> bool:
+        """Start recording. cam='all' starts all cameras; or specify one name.
+        Returns True if at least one recording started successfully.
         """
-        if not self._camera:
-            return False
-        if path is None:
-            os.makedirs(self._rec_dir, exist_ok=True)
-            ts   = time.strftime("%Y%m%d_%H%M%S")
-            path = os.path.join(self._rec_dir, f"recording_{ts}.mp4")
-        return self._camera.start_recording(path)
+        os.makedirs(self._rec_dir, exist_ok=True)
+        ts      = time.strftime('%Y%m%d_%H%M%S')
+        started = False
+        targets = self._CAM_NAMES if cam == 'all' else (cam,)
+        for name in targets:
+            c = self._cam(name)
+            if c and not c.is_recording():
+                p = path or os.path.join(self._rec_dir, f'recording_{name}_{ts}.mp4')
+                if c.start_recording(p):
+                    started = True
+        # Legacy single-camera fallback
+        if self._camera and not self._camera.is_recording() and cam in ('all', 'legacy'):
+            p = path or os.path.join(self._rec_dir, f'recording_{ts}.mp4')
+            if self._camera.start_recording(p):
+                started = True
+        return started
 
-    def stop_cam_recording(self) -> str:
-        """Stop recording and return the saved file path (empty string if not recording)."""
-        return self._camera.stop_recording() if self._camera else ""
+    def stop_cam_recording(self, cam: str = 'all') -> list:
+        """Stop recording. cam='all' stops all cameras.
+        Returns list of saved file paths.
+        """
+        paths = []
+        targets = self._CAM_NAMES if cam == 'all' else (cam,)
+        for name in targets:
+            c = self._cam(name)
+            if c:
+                p = c.stop_recording()
+                if p:
+                    paths.append(p)
+        if self._camera:
+            p = self._camera.stop_recording()
+            if p:
+                paths.append(p)
+        return paths
 
-    def is_cam_recording(self) -> bool:
-        """Return True if the camera is currently recording."""
-        return bool(self._camera and self._camera.is_recording())
+    def is_cam_recording(self, cam: str = 'any') -> bool:
+        """Return True if any (cam='any') or a specific named camera is recording."""
+        if cam == 'any':
+            return any([
+                bool(self._cam_front_left  and self._cam_front_left.is_recording()),
+                bool(self._cam_front_right and self._cam_front_right.is_recording()),
+                bool(self._cam_rear        and self._cam_rear.is_recording()),
+                bool(self._camera          and self._camera.is_recording()),
+            ])
+        c = self._cam(cam)
+        return bool(c and c.is_recording())
 
     def start_data_log(self, path: str = None, hz: float = 10.0) -> bool:
         """Start ML data logging to *path* (auto-generated if None).
