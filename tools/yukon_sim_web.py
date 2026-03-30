@@ -50,14 +50,19 @@ def _get_state():
     with _sim._lock:
         s = dict(_sim._state)
         strip_pixels = [list(p) for p in s.get('strip_pixels', [])]
+    rc_mode = s.get('rc_mode', _sim.RC_MANUAL)
     return {
         'left_speed'    : _sim._decode_speed(s.get('left_byte')),
         'right_speed'   : _sim._decode_speed(s.get('right_byte')),
         'led_a'         : s.get('led_a', False),
         'led_b'         : s.get('led_b', False),
         'cmds_rx'       : s.get('cmds_rx', 0),
+        'rc_mode'       : rc_mode,
+        'rc_mode_name'  : _sim.RC_MODE_NAMES.get(rc_mode, str(rc_mode)),
         'imu_present'   : s.get('imu_present', True),
         'imu_heading'   : round(s.get('imu_heading', 0.0), 1),
+        'imu_pitch'     : round(s.get('imu_pitch',   0.0), 1),
+        'imu_roll'      : round(s.get('imu_roll',    0.0), 1),
         'bearing_target': s.get('bearing_target'),
         'fault_l'       : s.get('fault_l', False),
         'fault_r'       : s.get('fault_r', False),
@@ -316,6 +321,7 @@ button.active{background:#1a2a1a}
       </div>
     </div>
     <div class="badges" style="margin-top:8px">
+      <span class="badge" id="bdg-mode">Mode: --</span>
       <span class="badge" id="bdg-cmds">Cmds: 0</span>
       <span class="badge" id="bdg-fl">Fault L: --</span>
       <span class="badge" id="bdg-fr">Fault R: --</span>
@@ -326,6 +332,8 @@ button.active{background:#1a2a1a}
     <div class="badges">
       <span class="badge info" id="bdg-volt">V: --</span>
       <span class="badge info" id="bdg-curr">A: --</span>
+      <span class="badge" id="bdg-pitch">Pitch: --</span>
+      <span class="badge" id="bdg-roll">Roll: --</span>
     </div>
   </div>
 
@@ -468,6 +476,8 @@ function applyState(s) {
   // LED A/B squares
   el('sq-leda').className = 'led-sq' + (s.led_a ? ' on' : '');
   el('sq-ledb').className = 'led-sq' + (s.led_b ? ' on' : '');
+  const modeCls = s.rc_mode === 1 ? 'ok' : s.rc_mode === 2 ? 'err' : 'info';
+  setBadge('bdg-mode', `Mode: ${s.rc_mode_name}`, modeCls);
   setBadge('bdg-cmds', `Cmds: ${s.cmds_rx}`, 'info');
 
   // LED strip
@@ -502,6 +512,13 @@ function applyState(s) {
   // Sim values
   setBadge('bdg-volt', `${s.voltage.toFixed(1)} V`, 'info');
   setBadge('bdg-curr', `${s.current.toFixed(2)} A`, 'info');
+  if (s.imu_present) {
+    setBadge('bdg-pitch', `Pitch: ${s.imu_pitch >= 0 ? '+' : ''}${s.imu_pitch.toFixed(1)}°`, 'info');
+    setBadge('bdg-roll',  `Roll: ${s.imu_roll  >= 0 ? '+' : ''}${s.imu_roll.toFixed(1)}°`,  'info');
+  } else {
+    setBadge('bdg-pitch', 'Pitch: ---', '');
+    setBadge('bdg-roll',  'Roll: ---',  '');
+  }
 
   // Sync sliders (only if not being dragged)
   if (document.activeElement !== el('volt-slider')) {

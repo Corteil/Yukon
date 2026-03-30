@@ -42,6 +42,15 @@ CMD_STRIP      = 7
 CMD_PIXEL_SET  = 8
 CMD_PIXEL_SHOW = 9
 CMD_PATTERN    = 10
+CMD_MODE       = 11
+CMD_RC_QUERY   = 12
+
+RESP_RC_BASE   = 8   # resp IDs 8–21 = RC channels 0–13, 22 = validity flag
+
+RC_MANUAL = 0
+RC_AUTO   = 1
+RC_ESTOP  = 2
+RC_MODE_NAMES = {RC_MANUAL: 'MANUAL', RC_AUTO: 'AUTO', RC_ESTOP: 'ESTOP'}
 
 STRIP_COLOURS = [
     (  0,   0,   0),  # 0  off
@@ -67,6 +76,8 @@ RESP_TEMP_R  = 4
 RESP_FAULT_L = 5
 RESP_FAULT_R = 6
 RESP_HEADING = 7  # IMU heading, same encoding as CMD_BEARING; 255 = IMU absent
+RESP_PITCH   = 8  # IMU pitch  (pitch+90)*254/180;  255 = absent
+RESP_ROLL    = 9  # IMU roll   (roll+180)*254/360;   255 = absent
 
 # ---------------------------------------------------------------------------
 # iBUS constants
@@ -98,9 +109,15 @@ _state = {
     'led_b'          : False,
     'cmds_rx'        : 0,       # total Yukon commands received
     'running'        : True,
+    # Mode (set by CMD_MODE heartbeat from Pi)
+    'rc_mode'        : RC_MANUAL,
+    'rc_channels'    : [1500] * 14,  # simulated RC channels (µs), default centre
+    'rc_valid'       : True,         # simulated RC signal validity
     # IMU simulation
     'imu_present'    : True,    # toggle with I key
     'imu_heading'    : 0.0,     # current simulated heading (0–359°)
+    'imu_pitch'      : 0.0,     # simulated pitch  (−90 … +90°, +ve = nose up)
+    'imu_roll'       : 0.0,     # simulated roll   (−180 … +180°, +ve = right down)
     'bearing_target' : None,    # None = hold disabled; float = active target
     'last_imu_tick'  : 0.0,     # monotonic time of last heading update
     # LED strip simulation
@@ -329,7 +346,7 @@ def yukon_server(master_fd):
             continue
 
         if sm == 'CMD':
-            if 0x21 <= b <= 0x2A:          # commands 1–10 (0x21–0x2A)
+            if 0x21 <= b <= 0x2C:          # commands 1–12 (0x21–0x2C)
                 pkt_cmd = b
                 sm = 'V_HIGH'
             else:
@@ -362,9 +379,11 @@ def yukon_server(master_fd):
                 with _lock:
                     _state['cmds_rx'] += 1
                     if cmd_code == CMD_LEFT:
-                        _state['left_byte'] = value
+                        if _state['rc_mode'] == RC_AUTO:   # AUTO-only; ignored in MANUAL/ESTOP
+                            _state['left_byte'] = value
                     elif cmd_code == CMD_RIGHT:
-                        _state['right_byte'] = value
+                        if _state['rc_mode'] == RC_AUTO:
+                            _state['right_byte'] = value
                     elif cmd_code == CMD_KILL:
                         _state['left_byte']     = 0
                         _state['right_byte']    = 0
@@ -411,6 +430,22 @@ def yukon_server(master_fd):
                         if pat == 0:
                             _state['strip_pixels'] = [(0, 0, 0)] * NUM_LEDS
 
+                    elif cmd_code == CMD_MODE:
+                        _state['rc_mode'] = value
+                        if value == RC_ESTOP:
+                            _state['left_byte']      = 0
+                            _state['right_byte']     = 0
+                            _state['bearing_target'] = None
+
+                    elif cmd_code == CMD_RC_QUERY:
+                        # 14 channel packets + 1 validity packet then ACK
+                        channels = list(_state['rc_channels'])
+                        valid    = int(_state['rc_valid'])
+                        for i, us in enumerate(channels):
+                            _send_sensor_packet(master_fd, RESP_RC_BASE + i,
+                                                (us - 1000) // 5)
+                        _send_sensor_packet(master_fd, RESP_RC_BASE + 14, valid)
+
                     elif cmd_code == CMD_SENSOR:
                         _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
                         _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
@@ -419,12 +454,18 @@ def yukon_server(master_fd):
                         _send_sensor_packet(master_fd, RESP_TEMP_R,  SIM_TEMP_MOD * 3)
                         _send_sensor_packet(master_fd, RESP_FAULT_L, int(_state.get('fault_l', False)))
                         _send_sensor_packet(master_fd, RESP_FAULT_R, int(_state.get('fault_r', False)))
-                        # RESP_HEADING: send encoded heading, or 255 if IMU absent
+                        # RESP_HEADING/PITCH/ROLL: send encoded values, or 255 if IMU absent
                         if _state['imu_present']:
                             _send_sensor_packet(master_fd, RESP_HEADING,
                                                 _bearing_encode(_state['imu_heading']))
+                            _send_sensor_packet(master_fd, RESP_PITCH,
+                                int((_state['imu_pitch'] + 90.0)  * 254.0 / 180.0 + 0.5))
+                            _send_sensor_packet(master_fd, RESP_ROLL,
+                                int((_state['imu_roll']  + 180.0) * 254.0 / 360.0 + 0.5))
                         else:
                             _send_sensor_packet(master_fd, RESP_HEADING, 255)
+                            _send_sensor_packet(master_fd, RESP_PITCH,   255)
+                            _send_sensor_packet(master_fd, RESP_ROLL,    255)
                 os.write(master_fd, bytes([ACK]))
             sm = 'SYNC'
 
@@ -442,8 +483,11 @@ def draw(yukon_path):
         led_a        = _state['led_a']
         led_b        = _state['led_b']
         cmds         = _state['cmds_rx']
+        rc_mode      = _state['rc_mode']
         imu_present  = _state['imu_present']
         imu_heading  = _state['imu_heading']
+        imu_pitch    = _state['imu_pitch']
+        imu_roll     = _state['imu_roll']
         bearing_tgt  = _state['bearing_target']
         strip_pixels = list(_state['strip_pixels'])
         strip_pat    = _state['strip_pattern']
@@ -470,17 +514,22 @@ def draw(yukon_path):
         err = _angle_diff(bearing_tgt, imu_heading)
         err_str = f'  err: {err:+.1f}°'
 
+    mode_str = RC_MODE_NAMES.get(rc_mode, str(rc_mode))
+
     lines = [
         '\033[2J\033[H',
         '=== Yukon Simulator ' + '=' * 42,
         f'  Yukon port : {yukon_path}',
         f'  Connect any client with --port {yukon_path}',
+        f'  Mode       : {mode_str}',
         '--- Motor commands received ' + '-' * 34,
         speed_line('Left ', rx_l),
         speed_line('Right', rx_r),
+        '  (CMD_LEFT/RIGHT only applied in AUTO mode)',
         '--- IMU ' + '-' * 54,
         f'  IMU      : {imu_str}',
         f'  Heading  : {compass_bar(imu_heading) if imu_present else "---"}',
+        f'  Pitch    : {imu_pitch:+.1f}°  Roll: {imu_roll:+.1f}°' if imu_present else '  Pitch    : ---  Roll: ---',
         f'  Brg hold : {tgt_str}{err_str}',
         f'  Keys     : < decrease heading   > increase heading   I toggle IMU',
         '--- Status ' + '-' * 51,

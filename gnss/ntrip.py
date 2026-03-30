@@ -95,6 +95,8 @@ class NTRIPClient:
     def start(self, gnss):
         """Start the background correction thread, feeding RTCM to gnss."""
         import threading
+        if not self.username:
+            print("[NTRIP] WARNING: username is empty — RTK2Go requires your email address as username")
         self._gnss    = gnss
         self._running = True
         self._thread  = threading.Thread(
@@ -139,7 +141,8 @@ class NTRIPClient:
                 if self.debug:
                     print("[NTRIP] Error:", e)
                 else:
-                    print("[NTRIP] Connection lost:", e)
+                    print("[NTRIP] Connection lost: {} ({} RTCM bytes received)".format(
+                        e, self.bytes_received))
 
             if self._running:
                 print("[NTRIP] Reconnecting in {}s...".format(self.reconnect_s))
@@ -170,9 +173,9 @@ class NTRIPClient:
         self.status       = NTRIP_CONNECTED
         self.connected_at = time.time()
         self.last_error   = None
+        self.bytes_received = 0
         print("[NTRIP] Connected OK - receiving RTCM corrections")
 
-        self._send_gga_to_caster()
         last_gga = time.time()
 
         if getattr(self, "_header_remainder", b""):
@@ -218,13 +221,11 @@ class NTRIPClient:
         ).decode()
         if self.ntrip_version == 1:
             return (
-                "GET /{mp} HTTP/1.1\r\n"
-                "Host: {host}\r\n"
+                "GET /{mp} HTTP/1.0\r\n"
                 "User-Agent: NTRIP GNSS-Python/1.0\r\n"
                 "Authorization: Basic {creds}\r\n"
-                "Connection: close\r\n"
                 "\r\n"
-            ).format(mp=self.mountpoint, host=self.host, creds=creds)
+            ).format(mp=self.mountpoint, creds=creds)
         else:
             gga = self._build_gga_sentence()
             return (

@@ -15,12 +15,13 @@ python3 tools/upload.py yukon_firmware_and_software/main.py
 
 ### Hardware
 
-| Slot | Module | Role |
-|------|--------|------|
+| Slot / Pin | Module / Device | Role |
+|------------|-----------------|------|
 | SLOT3 | `LEDStripModule` (NeoPixel, 8 LEDs) | Status LED strip |
 | SLOT2 | `DualMotorModule` | Left motors |
 | SLOT5 | `DualMotorModule` | Right motors |
 | Qw/ST I2C | BNO085 (optional) | Heading for bearing hold |
+| GP26 (PIO UART RX) | FlySky iBUS RC receiver | RC input at 115200 baud via PIO state machine (SM1) |
 
 - Current limit: **2 A** per motor module
 - Motor loop rate: **50 Hz** (20 ms per tick)
@@ -31,7 +32,7 @@ python3 tools/upload.py yukon_firmware_and_software/main.py
 | Core | Responsibility |
 |------|---------------|
 | Core 1 | Motor drive loop — applies left/right speeds with optional bearing-hold correction at 50 Hz |
-| Core 0 | IMU heading updates, serial command parser, Yukon health monitoring |
+| Core 0 | iBUS PIO poll (non-blocking FIFO drain), IMU heading updates, serial command parser, Pi watchdog, Yukon health monitoring |
 
 Shared state (`_left_speed`, `_right_speed`, `_bearing_target`, `_current_heading`) is protected by a single mutex lock.
 
@@ -42,7 +43,7 @@ Shared state (`_left_speed`, `_right_speed`, `_bearing_target`, `_current_headin
 | Byte | Value | Notes |
 |------|-------|-------|
 | `SYNC` | `0x7E` | Framing byte — resets state machine if seen anywhere |
-| `CMD` | `cmd_code + 0x20` | Range `0x21`–`0x2A` |
+| `CMD` | `cmd_code + 0x20` | Range `0x21`–`0x2C` |
 | `V_HIGH` | `(value >> 4) + 0x40` | Range `0x40`–`0x4F` |
 | `V_LOW` | `(value & 0xF) + 0x50` | Range `0x50`–`0x5F` |
 | `CHK` | `CMD ^ V_HIGH ^ V_LOW` | XOR checksum |
@@ -54,15 +55,17 @@ Device replies **ACK** (`0x06`) on success, **NAK** (`0x15`) on error.
 | Command | Code | Value | Notes |
 |---------|------|-------|-------|
 | `CMD_LED` | 1 | 0=LED_A off, 1=LED_A on, 2=LED_B off, 3=LED_B on | Yukon status LEDs |
-| `CMD_LEFT` | 2 | speed byte | Left motor speed (see encoding below) |
-| `CMD_RIGHT` | 3 | speed byte | Right motor speed |
+| `CMD_LEFT` | 2 | speed byte | Left motor speed — **AUTO mode only** (ignored in MANUAL/ESTOP) |
+| `CMD_RIGHT` | 3 | speed byte | Right motor speed — **AUTO mode only** |
 | `CMD_KILL` | 4 | ignored | Zero both motors and disable bearing hold |
-| `CMD_SENSOR` | 5 | ignored | Returns sensor data packets then ACK |
+| `CMD_SENSOR` | 5 | ignored | Returns 10 sensor data packets then ACK |
 | `CMD_BEARING`    | 6  | 0–254 = heading, 255 = disable | Set/clear bearing hold (NAK if no IMU) |
 | `CMD_STRIP`      | 7  | Colour preset index (0–8) | Set all LEDs to palette colour; stops any pattern |
 | `CMD_PIXEL_SET`  | 8  | `(led_index << 4) \| colour_index` | Stage one pixel colour (no hardware update) |
 | `CMD_PIXEL_SHOW` | 9  | Ignored | Push all staged pixel data to strip hardware |
 | `CMD_PATTERN`    | 10 | `(colour_index << 4) \| pattern_id` | Start built-in animation (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge) |
+| `CMD_MODE`       | 11 | 0=MANUAL, 1=AUTO, 2=ESTOP | Pi heartbeat — must arrive at ≥2 Hz; absent for >500 ms triggers ESTOP |
+| `CMD_RC_QUERY`   | 12 | ignored | Returns 15 RC data packets (14 channels + validity flag) then ACK |
 
 ### Motor speed encoding
 
@@ -90,7 +93,7 @@ NAK is returned if `CMD_BEARING` (value ≠ 255) is received with no IMU fitted.
 
 ### CMD_SENSOR response
 
-The Yukon sends 8 data packets before the final ACK:
+The Yukon sends 10 data packets before the final ACK:
 
 | ID | Resp type | Encoding | Example |
 |----|-----------|----------|---------|
@@ -102,8 +105,32 @@ The Yukon sends 8 data packets before the final ACK:
 | 5 `RESP_FAULT_L` | Left motor fault | 0 or 1 | |
 | 6 `RESP_FAULT_R` | Right motor fault | 0 or 1 | |
 | 7 `RESP_HEADING` | IMU heading | same encoding as `CMD_BEARING`; 255 = IMU absent | |
+| 8 `RESP_PITCH` | IMU pitch | `(pitch + 90) × 254 / 180`; decode: `raw × 180/254 − 90`; 255 = absent | +45° → 127 |
+| 9 `RESP_ROLL`  | IMU roll  | `(roll + 180) × 254 / 360`; decode: `raw × 360/254 − 180`; 255 = absent | 0° → 127 |
 
 Each data packet: `[SYNC, RESP_TYPE, V_HIGH, V_LOW, CHK]` where `RESP_TYPE = sensor_id + 0x30`.
+
+### CMD_RC_QUERY response
+
+The Yukon sends 15 data packets before the final ACK:
+
+| ID | Content | Encoding | Decode |
+|----|---------|----------|--------|
+| 8–21 | RC channels 0–13 | `(µs − 1000) // 5` → 0–200 | `value × 5 + 1000` µs |
+| 22 | RC validity flag | 0 or 1 | 1 = live iBUS signal (packet within 500 ms) |
+
+`RESP_TYPE = resp_id + 0x30` (range `0x38`–`0x46`).
+
+### Failsafes
+
+Two independent failsafe mechanisms protect the robot:
+
+| Condition | Trigger | Action |
+|-----------|---------|--------|
+| RC signal lost (MANUAL mode) | No valid iBUS packet for 500 ms | Zero both motors |
+| Pi crash / USB drop | No `CMD_MODE` received for 500 ms | Enter ESTOP — zero motors, lock mode until `CMD_MODE` resumes |
+
+ESTOP mode clears automatically once `CMD_MODE` packets resume.
 
 ### LED strip
 

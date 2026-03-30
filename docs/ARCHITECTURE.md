@@ -3,16 +3,17 @@
 ## Component diagram
 
 ```
-FlySky TX ──iBUS──► RC Receiver (GPIO9 / /dev/ttyAMA3)
-                         │
-                    drivers/ibus.py (IBusReader)
-                         │
-                    Robot._rc_thread
-                         │
-                 ┌───────▼────────┐
-                 │ robot_daemon.py│  ← main Pi-side daemon
-                 │   Robot class  │
-                 └──┬──┬──┬──┬───┘
+FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
+                                         │
+                                    main.py (iBUS poll)
+                                    Core 0: decodes packets
+                                    Core 1: applies motor speeds
+                                    CMD_RC_QUERY / CMD_MODE
+                                         │ (USB serial)
+                 ┌───────────────────────▼────┐
+                 │ robot_daemon.py             │  ← main Pi-side daemon
+                 │   Robot class               │
+                 └──┬──┬──┬──┬───────────────┘
                     │  │  │  │
           ┌─────────┘  │  │  └──────────────┐
           │            │  │                 │
@@ -22,8 +23,9 @@ FlySky TX ──iBUS──► RC Receiver (GPIO9 / /dev/ttyAMA3)
           │            │                  │                │
     Yukon RP2040   IMX296 camera       LD06 LiDAR    TAU1308 RTK
     main.py        ArUco detection     GPIO18 PWM    NTRIP client
-   SLOT2/SLOT5
-   DualMotorModule
+   SLOT1: BenchPowerModule (5 V)
+   SLOT2/SLOT5: DualMotorModule
+   SLOT3: LEDStripModule
 ```
 
 Consumers of robot state:
@@ -72,11 +74,14 @@ Consumers of robot state:
 ## Data flow between subsystems
 
 ```
-RC receiver ──► _rc_thread ──► RobotState.drive (throttle/steer)
+RC receiver ──► Yukon GP26 (PIO UART) ──► main.py iBUS poll (Core 0)
+                                               │  MANUAL: apply motors directly (Core 1)
+                                               │  CMD_RC_QUERY response (10 Hz)
+                                               ▼
+                              _control_thread (50 Hz) — queries RC channels,
+                              sends CMD_MODE heartbeat, runs navigator in AUTO
                                      │
-                              _control_thread (50 Hz)
-                                     │
-                              _YukonLink.drive(left, right)
+                              _YukonLink.drive(left, right)   [AUTO only]
                                      │
                               5-byte serial packet ──► Yukon RP2040
                                                         Core1: applies speeds
@@ -159,9 +164,8 @@ All subsystem threads are daemon threads (die when the main process exits).
 | `ld06`          | `LD06`             | packet-driven | Parse LD06 LiDAR packets, update latest scan |
 | `gps`           | `_Gps`             | NMEA rate   | Parse NMEA sentences, inject RTCM |
 | `gps_log`       | `Robot`            | 5 Hz (cfg)  | Write GPS CSV log when enabled |
-| `rc_reader`     | `Robot`            | ~143 Hz     | Read iBUS packets, update RC channel state |
 | `telemetry`     | `Robot`            | 1 Hz        | Request sensor data from Yukon, update Telemetry |
-| `control`       | `Robot`            | 50 Hz (cfg) | Compute motor speeds from RC, send to Yukon |
+| `control`       | `Robot`            | 50 Hz (cfg) | Query RC channels via CMD_RC_QUERY (10 Hz), send CMD_MODE heartbeat, run navigator in AUTO, send drive commands |
 | `system`        | `_System`          | 1 Hz        | Poll CPU/mem/disk via psutil |
 
 Shared state is protected by `threading.Lock()` per subsystem object. GUIs call `robot.get_state()` which returns a shallow copy of the latest `RobotState`.

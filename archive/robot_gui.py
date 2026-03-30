@@ -144,13 +144,20 @@ def _draw_telemetry(surf, rect, t):
     _field(surf, "Board",   f"{t.board_temp:.0f}°C", mx,       my + 50)
     _field(surf, "Left",    f"{t.left_temp:.0f}°C",  mx + 100, my + 50)
     _field(surf, "Right",   f"{t.right_temp:.0f}°C", mx + 180, my + 50)
-    # Heading row
+    # IMU row
     hdg_str = f"{t.heading:.1f}°" if t.heading is not None else "---"
-    _field(surf, "IMU Hdg", hdg_str, mx, my + 100,
-           color=C_CYAN if t.heading is not None else C_GRAY)
+    pit_str = f"{t.pitch:+.1f}°"  if t.pitch   is not None else "---"
+    rol_str = f"{t.roll:+.1f}°"   if t.roll    is not None else "---"
+    imu_ok  = t.heading is not None
+    _field(surf, "IMU Hdg", hdg_str, mx,       my + 100,
+           color=C_CYAN if imu_ok else C_GRAY)
+    _field(surf, "Pitch",   pit_str, mx + 100, my + 100,
+           color=C_CYAN if imu_ok else C_GRAY)
+    _field(surf, "Roll",    rol_str, mx + 180, my + 100,
+           color=C_CYAN if imu_ok else C_GRAY)
     fault_str = (("FAULT-L " if t.left_fault else "") +
                  ("FAULT-R"  if t.right_fault else "")) or "OK"
-    _field(surf, "Faults", fault_str, mx + 130, my + 100,
+    _field(surf, "Faults", fault_str, mx, my + 150,
            color=C_RED if fault else C_GREEN)
 
 def _draw_gps(surf, rect, g, gps_ok, gps_logging=False):
@@ -737,7 +744,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
     FONT_TINY = pygame.font.SysFont("monospace", 11)
 
     TITLE_H = 72
-    PANEL_H = 190
+    PANEL_H = 210
     PANEL_Y = TITLE_H + 10
     BODY_Y  = PANEL_Y + PANEL_H + 10
     FOOTER_H= 30

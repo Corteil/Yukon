@@ -5,13 +5,13 @@ ld06.py — Driver for the LDROBOT LD06 DTOF LiDAR.
 Hardware setup (Raspberry Pi 5)
 --------------------------------
   GPIO 15 (RX)  ← LD06 Tx   (UART0 @ 230400 8N1)
-  GPIO 18 (PWM) → LD06 PWM  (30 kHz, 40% duty ≈ 10 Hz scan rate)
+  GPIO 12 (PWM) → LD06 PWM  (30 kHz, 40% duty ≈ 10 Hz scan rate)
   3.3 V / GND   as required
 
 Required /boot/firmware/config.txt overlays::
 
     dtoverlay=uart0-pi5                 # GPIO 14/15 → /dev/ttyAMA0
-    dtoverlay=pwm,pin=18,func=2         # GPIO 18 → PWM0 (pwmchip0/pwm0)
+    dtoverlay=pwm,pin=12,func=4         # GPIO 12 → PWM0 (pwmchip0/pwm0)
 
 Packet layout (47 bytes per packet, 12 points):
   Byte  0    : 0x54  header
@@ -78,7 +78,7 @@ class _SysfsPWM:
     Minimal sysfs PWM controller.
 
     Requires the pwm overlay to have exported the channel already via
-    ``dtoverlay=pwm,pin=18,func=2`` (creates /sys/class/pwm/pwmchip0/pwm0).
+    ``dtoverlay=pwm,pin=12,func=4`` (creates /sys/class/pwm/pwmchip0/pwm0).
     """
 
     def __init__(self, chip: int = 0, channel: int = 0):
@@ -98,7 +98,7 @@ class _SysfsPWM:
                      self._root, _PWM_FREQ_HZ, _PWM_DUTY_PCT)
         except OSError as e:
             log.warning("LD06 PWM setup failed: %s "
-                        "(check dtoverlay=pwm,pin=18,func=2 in config.txt)", e)
+                        "(check dtoverlay=pwm,pin=12,func=4 in config.txt)", e)
 
     def stop(self):
         try:
@@ -129,14 +129,14 @@ class LD06:
     Streaming driver for the LD06 LiDAR.
 
     Spawns a background reader thread on ``start()``.
-    Motor speed is controlled via hardware PWM on GPIO 18 (sysfs).
+    Motor speed is controlled via hardware PWM on GPIO 12 (sysfs).
     Call ``get_scan()`` from any thread to retrieve the latest complete scan.
 
     Parameters
     ----------
     port        : UART device, default ``/dev/ttyAMA0`` (GPIO 15)
     pwm_chip    : sysfs PWM chip number, default 0  (pwmchip0)
-    pwm_channel : sysfs PWM channel,    default 0  (pwm0 → GPIO 18)
+    pwm_channel : sysfs PWM channel,    default 0  (pwm0 → GPIO 12)
     """
 
     def __init__(self,

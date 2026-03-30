@@ -141,6 +141,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False,
             'left_fault':  t.left_fault,
             'right_fault': t.right_fault,
             'heading':     round(t.heading, 1) if t.heading is not None else None,
+            'pitch':       round(t.pitch,   1) if t.pitch   is not None else None,
+            'roll':        round(t.roll,    1) if t.roll    is not None else None,
         },
         'gps': {
             'latitude':       g.latitude,
@@ -373,6 +375,10 @@ button:active{background:#2a2a42}
         <label>Faults</label>
         <span id="t-fault" style="color:var(--green)">OK</span>
       </div>
+    </div>
+    <div class="tgrid" style="margin-top:6px">
+      <div class="field"><label>Pitch</label><span id="t-pitch" style="color:var(--gray)">---</span></div>
+      <div class="field"><label>Roll</label> <span id="t-roll"  style="color:var(--gray)">---</span></div>
     </div>
   </div>
 
@@ -735,7 +741,7 @@ function applyState(s) {
   fEl.style.color=fault?C.red:C.green;
   el('telem-title').style.color=fault?C.red:C.gray;
 
-  // IMU heading
+  // IMU heading / pitch / roll
   const hdgEl=el('hdg-text');
   if (t.heading != null) {
     hdgEl.textContent = t.heading.toFixed(1)+'°';
@@ -747,6 +753,12 @@ function applyState(s) {
     hdgEl.style.color = C.gray;
     el('compass-canvas').style.opacity='0.3';
   }
+  const pitEl=el('t-pitch');
+  pitEl.textContent = t.pitch != null ? (t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°' : '---';
+  pitEl.style.color = t.pitch != null ? C.cyan : C.gray;
+  const rolEl=el('t-roll');
+  rolEl.textContent = t.roll  != null ? (t.roll>=0?'+':'')+t.roll.toFixed(1)+'°'   : '---';
+  rolEl.style.color = t.roll  != null ? C.cyan : C.gray;
 
   // GPS
   const g=s.gps, gOk=s.gps_ok;

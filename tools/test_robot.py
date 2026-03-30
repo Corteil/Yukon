@@ -33,7 +33,9 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, _TOOLS)
 
 from robot_daemon import Robot, RobotMode
-from yukon_sim import yukon_server, _state, _lock, SIM_VOLTAGE, SIM_CURRENT, SIM_TEMP
+from yukon_sim import (yukon_server, _state, _lock,
+                        SIM_VOLTAGE, SIM_CURRENT, SIM_TEMP,
+                        RC_MANUAL, RC_AUTO)
 
 
 # ── Test harness ──────────────────────────────────────────────────────────────
@@ -78,6 +80,9 @@ def _start_sim():
         _state['led_b']          = False
         _state['cmds_rx']        = 0
         _state['running']        = True
+        _state['rc_mode']        = RC_MANUAL
+        _state['rc_channels']    = [1500] * 14
+        _state['rc_valid']       = True
         _state['imu_present']    = True
         _state['imu_heading']    = _SIM_HEADING
         _state['bearing_target'] = None
@@ -136,24 +141,34 @@ def test_get_state(robot):
 def test_drive(robot):
     print("\nDrive commands:")
 
-    robot._yukon.drive(0.5, -0.5)
-    time.sleep(0.1)   # give sim thread time to process
+    # Drive commands are only applied by the sim in AUTO mode (matches firmware behaviour).
+    # Put the robot in AUTO and use robot.drive() so the control thread sends the values.
+    # Note: control thread applies speed_scale, so we test sign/symmetry not exact bytes.
+    robot.set_mode(RobotMode.AUTO)
+    robot.drive(0.5, -0.5)
+    time.sleep(0.15)   # wait for control thread (50 Hz) to deliver to sim
 
     with _lock:
         lb = _state['left_byte']
         rb = _state['right_byte']
 
-    # speed_byte(+0.5) = 50,  speed_byte(-0.5) = 150
-    _check("drive(0.5, -0.5): left byte = 50",  lb == 50,  f"got {lb}")
-    _check("drive(0.5, -0.5): right byte = 150", rb == 150, f"got {rb}")
+    # left = forward (0–99), right = reverse (101–200), equal magnitudes
+    _check("drive(0.5, -0.5): left byte forward (0<lb<100)",   0 < lb < 100,    f"got {lb}")
+    _check("drive(0.5, -0.5): right byte reverse (100<rb≤200)", 100 < rb <= 200, f"got {rb}")
+    _check("drive(0.5, -0.5): symmetric magnitudes (lb == rb-100)", lb == rb - 100, f"lb={lb} rb={rb}")
 
-    robot._yukon.drive(0.0, 0.0)
-    time.sleep(0.1)
+    # drive(0, 0): trigger another AUTO pulse to send zero bytes
+    robot.set_mode(RobotMode.AUTO)
+    robot.drive(0.0, 0.0)
+    time.sleep(0.15)
     with _lock:
         lb = _state['left_byte']
         rb = _state['right_byte']
     _check("drive(0, 0): left byte = 0",   lb == 0, f"got {lb}")
     _check("drive(0, 0): right byte = 0",  rb == 0, f"got {rb}")
+
+    robot.set_mode(RobotMode.MANUAL)   # restore
+    time.sleep(0.05)
 
 
 def test_kill(robot):
@@ -215,8 +230,12 @@ def test_telemetry(robot):
     _check("telemetry timestamp set", t.timestamp > 0)
 
 
+_SIM_PITCH =   0.0   # degrees — sim default pitch
+_SIM_ROLL  =   0.0   # degrees — sim default roll
+
+
 def test_imu_heading(robot):
-    print("\nIMU heading:")
+    print("\nIMU heading / pitch / roll:")
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         hdg = robot.get_heading()
@@ -231,6 +250,16 @@ def test_imu_heading(robot):
            f"got {hdg}")
 
     state = robot.get_state()
+    t = state.telemetry
+    # Pitch: ~0.7° resolution; sim default 0.0°; allow 2° tolerance
+    _check(f"pitch ≈ {_SIM_PITCH}° (±2°)",
+           t.pitch is not None and _approx(t.pitch, _SIM_PITCH, tol=2.0),
+           f"got {t.pitch}")
+    # Roll: ~1.4° resolution; sim default 0.0°; allow 2° tolerance
+    _check(f"roll ≈ {_SIM_ROLL}° (±2°)",
+           t.roll is not None and _approx(t.roll, _SIM_ROLL, tol=2.0),
+           f"got {t.roll}")
+
     _check("nav_bearing_err is None (navigator not running)",
            state.nav_bearing_err is None)
 

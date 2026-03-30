@@ -35,8 +35,10 @@ python3 tools/test_main.py --port /dev/ttyACM0 --ramp
 
 ### test_ibus.py
 
-Unit tests and live channel display for the iBUS RC receiver.
+Unit tests and live channel display for the iBUS RC receiver via Pi UART.
 Shows a live bar graph of all 14 channels, updating in-place.
+
+> **Note:** The main robot stack no longer reads iBUS on the Pi — RC input is handled by Yukon GP26. `test_ibus.py` is useful when testing `rc_drive.py` or `drivers/ibus.py` standalone (requires the `uart3-pi5` overlay and iBUS wired to GPIO 9).
 
 ```
 python3 tools/test_ibus.py [PORT]
@@ -195,7 +197,7 @@ Tests covered:
 | 10 | AUTO mode | `set_mode(AUTO/MANUAL)` transitions; `set_mode(ESTOP)` raises; `drive()` clamps and stores values |
 | 11 | Data logging | `start_data_log()` / `stop_data_log()` create valid JSONL with `ts`, `mode`, `drive` fields |
 
-The iBUS port is set to a non-existent path — the rc_reader thread logs a warning and exits, which is expected.
+The iBUS port is set to a non-existent path — this is expected and harmless; the main robot stack no longer uses Pi-side iBUS (RC input moved to Yukon GP26).
 
 ---
 

@@ -1,0 +1,1674 @@
+#!/usr/bin/env python3
+"""
+robot_dashboard.py — Unified web dashboard for HackyRacingRobot.
+
+Replaces robot_web.py, robot_mobile.py, robot_gui.py, robot_quad_gui.py.
+
+Layout
+------
+  Desktop / touchscreen (≥701px):
+    Status bar (always visible) + 2×2 configurable panel grid.
+    Single-tap quad → panel-type chooser.
+    Double-tap / double-click → expand panel full-screen.
+    Preset buttons: Race / Setup / Debug (from robot.ini [layout_presets]).
+
+  Mobile (≤700px):
+    Status bar + tab pages (Drive / Telem / GPS / System / Logs).
+    Tab bar fixed at bottom.
+
+Usage
+-----
+  python3 robot_dashboard.py            # 0.0.0.0:5000
+  python3 robot_dashboard.py --port 8080
+  python3 robot_dashboard.py --no-motors
+"""
+
+import argparse
+import configparser
+import io
+import json
+import logging
+import os
+import sys
+import time
+
+from flask import Flask, Response, request, jsonify
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from robot_daemon import Robot, RobotMode, AutoType, setup_logging
+from robot_utils import _cfg, _local_ip
+
+log = logging.getLogger(__name__)
+
+
+# ── JPEG encoder ──────────────────────────────────────────────────────────────
+
+def _make_jpeg_encoder():
+    """Fallback JPEG encoder for when robot.get_jpeg() returns None (no cached frame yet).
+
+    Priority: TurboJPEG (libjpeg-turbo NEON SIMD) → OpenCV → Pillow.
+    Under normal operation the camera thread pre-encodes frames, so this path
+    is rarely used — it only fires on the first frame before the cache warms up.
+    """
+    try:
+        from turbojpeg import TurboJPEG, TJPF_RGB
+        _tj = TurboJPEG()
+        def _enc(frame, quality=75):
+            return bytes(_tj.encode(frame, quality=quality, pixel_format=TJPF_RGB))
+        log.info('Fallback JPEG encoder: TurboJPEG (libjpeg-turbo NEON)')
+        return _enc
+    except Exception:
+        pass
+    try:
+        import cv2
+        def _enc(frame, quality=75):
+            _, buf = cv2.imencode('.jpg', frame[:, :, ::-1],
+                                  [cv2.IMWRITE_JPEG_QUALITY, quality])
+            return buf.tobytes()
+        log.info('Fallback JPEG encoder: OpenCV')
+        return _enc
+    except ImportError:
+        pass
+    try:
+        from PIL import Image as _PIL
+        def _enc(frame, quality=75):
+            buf = io.BytesIO()
+            _PIL.fromarray(frame).save(buf, format='JPEG', quality=quality)
+            return buf.getvalue()
+        log.info('Fallback JPEG encoder: Pillow')
+        return _enc
+    except ImportError:
+        pass
+    log.warning('No JPEG encoder — camera stream disabled (pip install pillow)')
+    return None
+
+_jpeg_encode = None
+
+
+# ── State serialiser ──────────────────────────────────────────────────────────
+
+def _serialise(state, cam_rotation=0, aruco_enabled=False,
+               aruco_state=None, nav_bearing_err=None):
+    g, t, d, li, s = (state.gps, state.telemetry, state.drive,
+                      state.lidar, state.system)
+
+    aruco_info = None
+    if aruco_enabled and aruco_state is not None:
+        aruco_info = {
+            'tag_count':  len(aruco_state.tags),
+            'gate_count': len(aruco_state.gates),
+            'fps':        aruco_state.fps,
+            'tags':  [{'id': t2.id, 'cx': t2.center_x, 'cy': t2.center_y,
+                        'area': t2.area, 'bearing': t2.bearing,
+                        'distance': t2.distance}
+                      for t2 in aruco_state.tags.values()],
+            'gates': [{'gate_id': gx.gate_id, 'centre_x': gx.centre_x,
+                        'centre_y': gx.centre_y, 'bearing': gx.bearing,
+                        'distance': gx.distance, 'correct_dir': gx.correct_dir}
+                      for gx in aruco_state.gates.values()],
+        }
+
+    return {
+        'mode':          state.mode.name,
+        'auto_type':     state.auto_type.label,
+        'speed_scale':   state.speed_scale,
+        'rc_active':     state.rc_active,
+        'camera_ok':     state.camera_ok,
+        'lidar_ok':      state.lidar_ok,
+        'gps_ok':        state.gps_ok,
+        'aruco_ok':      state.aruco_ok,
+        'aruco_enabled': aruco_enabled,
+        'cam_rotation':  cam_rotation,
+        'gps_logging':   state.gps_logging,
+        'cam_recording': state.cam_recording,
+        'data_logging':  state.data_logging,
+        'no_motors':     state.no_motors,
+        'nav_state':     state.nav_state,
+        'nav_gate':      state.nav_gate,
+        'nav_bearing_err': nav_bearing_err,
+        'nav_wp':        state.nav_wp,
+        'nav_wp_dist':   state.nav_wp_dist,
+        'nav_wp_bear':   state.nav_wp_bear,
+        'aruco':         aruco_info,
+        # Per-camera status
+        'cam_fl_ok':  state.cam_front_left_ok,
+        'cam_fr_ok':  state.cam_front_right_ok,
+        'cam_re_ok':  state.cam_rear_ok,
+        'cam_fl_rec': state.cam_front_left_recording,
+        'cam_fr_rec': state.cam_front_right_recording,
+        'cam_re_rec': state.cam_rear_recording,
+        'gate_confirmed':  state.gate_confirmed,
+        'current_gate_id': state.current_gate_id,
+        'drive': {
+            'left':  round(d.left,  3),
+            'right': round(d.right, 3),
+        },
+        'telemetry': {
+            'voltage':     round(t.voltage,    2),
+            'current':     round(t.current,    3),
+            'board_temp':  round(t.board_temp, 1),
+            'left_temp':   round(t.left_temp,  1),
+            'right_temp':  round(t.right_temp, 1),
+            'left_fault':  t.left_fault,
+            'right_fault': t.right_fault,
+            'heading': round(t.heading, 1) if t.heading is not None else None,
+            'pitch':   round(t.pitch,   1) if t.pitch   is not None else None,
+            'roll':    round(t.roll,    1) if t.roll    is not None else None,
+        },
+        'gps': {
+            'latitude':         g.latitude,
+            'longitude':        g.longitude,
+            'altitude':         g.altitude,
+            'fix_quality':      g.fix_quality,
+            'fix_quality_name': g.fix_quality_name,
+            'h_error_m':        g.h_error_m,
+            'satellites':       g.satellites,
+            'satellites_view':  g.satellites_view,
+            'hdop':             g.hdop,
+        },
+        'lidar': {
+            'angles':    li.angles,
+            'distances': li.distances,
+        },
+        'system': {
+            'cpu_percent':   s.cpu_percent,
+            'cpu_temp_c':    s.cpu_temp_c,
+            'cpu_freq_mhz':  s.cpu_freq_mhz,
+            'mem_used_mb':   s.mem_used_mb,
+            'mem_total_mb':  s.mem_total_mb,
+            'mem_percent':   s.mem_percent,
+            'disk_used_gb':  s.disk_used_gb,
+            'disk_total_gb': s.disk_total_gb,
+            'disk_percent':  s.disk_percent,
+        },
+    }
+
+
+# ── Embedded HTML/CSS/JS ──────────────────────────────────────────────────────
+
+_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>HackyRacingRobot</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#12121e;--panel:#1c1c2d;--border:#3c3c5a;
+  --white:#e6e6f0;--gray:#82829a;
+  --green:#3cdc50;--yellow:#f0c828;--orange:#f08c28;
+  --red:#dc3c3c;--cyan:#3cc8dc;--purple:#b450dc;
+}
+html,body{height:100%;background:var(--bg);color:var(--white);
+  font-family:'Courier New',Courier,monospace;overflow:hidden}
+body{display:flex;flex-direction:column;padding:4px;gap:4px;height:100vh}
+
+/* ── Status bar ── */
+#sb{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:5px 10px;
+  background:var(--panel);border:1px solid var(--border);border-radius:7px;
+  flex-shrink:0;min-height:40px;transition:border-color .3s}
+#sb-mode{font-size:15px;font-weight:bold;padding:2px 8px;border:1px solid;border-radius:4px}
+#sb-info{display:flex;gap:12px;font-size:13px;flex:1;flex-wrap:wrap}
+.sb-badge{font-size:12px;color:var(--gray)}
+#sb-presets{display:flex;gap:4px;margin-left:auto}
+#sb-btns{display:flex;gap:5px}
+button{font-family:inherit;font-size:12px;padding:3px 9px;border-radius:5px;
+  border:1px solid var(--border);background:var(--panel);color:var(--white);
+  cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button:active{background:#2a2a42}
+.btn-estop{border-color:var(--red)!important;color:var(--red)!important}
+.btn-reset{border-color:var(--green)!important;color:var(--green)!important}
+.btn-mode{border-color:var(--yellow);color:var(--yellow)}
+.btn-preset{font-size:11px;padding:2px 7px;color:var(--gray)}
+.btn-preset.active{color:var(--cyan);border-color:var(--cyan)}
+@keyframes blink{50%{opacity:.25}}
+@keyframes rec-blink{50%{opacity:0}}
+
+/* ── No-motors banner ── */
+#no-motors-banner{display:none;background:#3a0000;border:1px solid var(--red);
+  border-radius:5px;padding:3px 10px;text-align:center;color:var(--red);
+  font-size:12px;font-weight:bold;flex-shrink:0}
+
+/* ── Main area ── */
+#main{flex:1;min-height:0;display:flex;flex-direction:column}
+
+/* ── Desktop grid ── */
+#grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+  gap:4px;flex:1;min-height:0}
+.quad{background:var(--panel);border:1px solid var(--border);border-radius:7px;
+  overflow:hidden;display:flex;flex-direction:column;position:relative;
+  cursor:pointer;min-height:0}
+.quad.expanded{position:fixed;top:0;left:0;right:0;bottom:0;z-index:200;
+  border-radius:0;border:none}
+.quad-hdr{display:flex;align-items:center;gap:5px;padding:3px 7px;
+  background:rgba(0,0,0,.3);flex-shrink:0;font-size:11px;color:var(--gray)}
+.quad-title{font-weight:bold;color:var(--white);flex:1;cursor:pointer}
+.quad-title:hover{color:var(--green)}
+.quad-hdr button{padding:4px 10px;font-size:13px}
+.quad-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+
+/* Camera panel */
+.cam-wrap{flex:1;min-height:0;overflow:hidden;display:flex;align-items:center;
+  justify-content:center;background:var(--bg);position:relative}
+.cam-img{width:100%;height:100%;object-fit:contain;display:block}
+.cam-nosig{position:absolute;color:var(--gray);font-size:12px}
+.cam-paused{position:absolute;color:var(--white);font-size:18px;font-weight:bold;
+  background:rgba(0,0,0,.55);padding:8px 18px;border-radius:8px;pointer-events:none}
+.cam-rec-dot{position:absolute;top:8px;left:8px;width:10px;height:10px;
+  border-radius:50%;background:var(--red);display:none;
+  animation:rec-blink .8s step-end infinite}
+.cam-nav-badge{position:absolute;top:5px;right:5px;font-size:10px;
+  background:rgba(18,18,30,.85);padding:2px 5px;border-radius:3px;display:none}
+.bearing-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
+  pointer-events:none;display:none}
+
+/* Motor bars */
+.mrow{display:flex;align-items:center;gap:6px;padding:4px 8px}
+.mlabel{width:10px;font-size:12px;color:var(--gray);flex-shrink:0}
+.mtrack{flex:1;height:34px;background:var(--bg);border-radius:4px;position:relative}
+.mmid{position:absolute;left:50%;top:3px;bottom:3px;width:1px;background:var(--border)}
+.mfill{position:absolute;top:3px;bottom:3px;border-radius:3px;transition:width .06s,left .06s}
+.mval{position:absolute;right:5px;top:50%;transform:translateY(-50%);
+  font-size:11px;pointer-events:none}
+
+/* Telemetry */
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
+.tgrid.three{grid-template-columns:1fr 1fr 1fr}
+.field label{font-size:10px;color:var(--gray);display:block}
+.field span{font-size:13px}
+.compass-wrap{display:inline-flex;align-items:center;gap:5px}
+.compass-canvas{width:32px;height:32px}
+
+/* GPS */
+.ggrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
+.ggrid.three{grid-template-columns:1fr 1fr 1fr}
+
+/* System bars */
+.sys-row{display:flex;align-items:center;gap:4px;padding:3px 8px}
+.sys-row label{font-size:10px;color:var(--gray);width:28px;flex-shrink:0}
+.sys-track{flex:1;height:14px;background:var(--bg);border-radius:3px;
+  position:relative;overflow:hidden}
+.sys-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .3s}
+.sys-val{position:absolute;right:3px;top:50%;transform:translateY(-50%);
+  font-size:10px;pointer-events:none}
+
+/* Log box */
+.log-toolbar{display:flex;gap:5px;padding:4px 7px;flex-shrink:0}
+.log-filter{flex:1;background:var(--bg);border:1px solid var(--border);
+  color:var(--white);border-radius:4px;padding:2px 6px;
+  font-family:inherit;font-size:11px}
+.log-box{flex:1;overflow-y:auto;background:var(--bg);font-size:12px;
+  line-height:1.4;padding:4px 6px}
+.tlog{white-space:pre-wrap;word-break:break-all;color:#b0b0c8}
+.tlog.warning{color:var(--yellow)}.tlog.error,.tlog.critical{color:var(--red)}
+.tlog.debug{color:var(--gray)}
+
+/* Lidar */
+.lidar-canvas{display:block;width:100%;flex:1}
+
+/* ── Panel chooser overlay ── */
+#chooser{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
+  z-index:300;align-items:center;justify-content:center}
+#chooser.open{display:flex}
+#chooser-box{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:16px;max-width:360px;width:90%}
+#chooser-title{font-size:13px;color:var(--gray);margin-bottom:10px;text-align:center}
+#chooser-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:12px}
+.chooser-btn{padding:8px 4px;font-size:11px;text-align:center;border-radius:5px}
+.chooser-btn.active{border-color:var(--cyan);color:var(--cyan)}
+#chooser-cancel{width:100%;padding:5px}
+
+/* ── Mobile layout ── */
+#tab-bar{display:none;flex-shrink:0;gap:2px;padding:4px;background:var(--panel);
+  border-top:1px solid var(--border)}
+.tab-btn{flex:1;padding:6px 2px;font-size:11px;text-align:center;border-radius:5px;
+  border-color:transparent;color:var(--gray)}
+.tab-btn.active{color:var(--cyan);border-color:var(--cyan)}
+#mob-tabs{display:none;flex:1;min-height:0;overflow:hidden}
+.mob-page{display:none;flex-direction:column;height:100%;overflow-y:auto}
+.mob-page.active{display:flex}
+.mob-section{padding:5px 8px;border-bottom:1px solid var(--border)}
+.mob-title{font-size:10px;color:var(--gray);margin-bottom:4px}
+
+@media(max-width:700px){
+  body{overflow-y:hidden}
+  #grid{display:none}
+  #mob-tabs{display:flex}
+  #tab-bar{display:flex}
+  #sb-presets{display:none}
+}
+@media(max-width:700px) and (orientation:landscape){
+  #mob-tabs .cam-wrap{max-height:55vw}
+}
+</style>
+</head>
+<body>
+
+<!-- Status bar -->
+<div id="sb">
+  <span id="sb-mode">--</span>
+  <div id="sb-info">
+    <span class="sb-badge" id="sb-volt">--V</span>
+    <span class="sb-badge" id="sb-rc">RC --</span>
+    <span class="sb-badge" id="sb-rec" style="display:none;color:var(--red);animation:blink 1s step-end infinite">⏺ REC</span>
+    <span class="sb-badge" id="sb-dlog" style="display:none;color:var(--purple)">⬤ DLOG</span>
+    <span class="sb-badge" id="sb-conn" style="margin-left:auto">⚫ Connecting…</span>
+  </div>
+  <div id="sb-presets"></div>
+  <div id="sb-btns">
+    <button class="btn-estop" onclick="sendCmd('estop')">ESTOP</button>
+    <button class="btn-reset" onclick="sendCmd('reset')">Reset</button>
+    <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
+    <button onclick="sendCmd('record_toggle')" id="btn-rec" title="Toggle recording">⏺ REC</button>
+    <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
+    <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
+  </div>
+</div>
+
+<!-- No-motors banner -->
+<div id="no-motors-banner">⚠ NO-MOTORS MODE — drive commands suppressed</div>
+
+<!-- Main: grid (desktop) or tab pages (mobile) -->
+<div id="main">
+
+  <!-- Desktop 2×2 grid -->
+  <div id="grid">
+    <div class="quad" id="q0">
+      <div class="quad-hdr" id="q0-hdr"><span class="quad-title" id="q0-title">--</span></div>
+      <div class="quad-body" id="q0-body"></div>
+    </div>
+    <div class="quad" id="q1">
+      <div class="quad-hdr" id="q1-hdr"><span class="quad-title" id="q1-title">--</span></div>
+      <div class="quad-body" id="q1-body"></div>
+    </div>
+    <div class="quad" id="q2">
+      <div class="quad-hdr" id="q2-hdr"><span class="quad-title" id="q2-title">--</span></div>
+      <div class="quad-body" id="q2-body"></div>
+    </div>
+    <div class="quad" id="q3">
+      <div class="quad-hdr" id="q3-hdr"><span class="quad-title" id="q3-title">--</span></div>
+      <div class="quad-body" id="q3-body"></div>
+    </div>
+  </div>
+
+  <!-- Mobile tab pages -->
+  <div id="mob-tabs">
+
+    <div class="mob-page active" id="mob-drive">
+      <div class="cam-wrap" id="mob-cam-wrap" style="max-height:45vh">
+        <img class="cam-img" id="mob-cam-img" alt="">
+        <span class="cam-nosig" id="mob-cam-nosig">No camera</span>
+        <canvas class="bearing-canvas" id="mob-bearing-canvas"></canvas>
+        <div class="cam-rec-dot" id="mob-cam-rec-dot"></div>
+        <div class="cam-nav-badge" id="mob-cam-nav-badge"></div>
+      </div>
+      <div class="mob-section">
+        <div class="mob-title">Drive</div>
+        <div class="mrow"><span class="mlabel">L</span>
+          <div class="mtrack"><div class="mmid"></div>
+            <div class="mfill" id="mob-fill-l"></div>
+            <span class="mval" id="mob-val-l">+0.00</span></div></div>
+        <div class="mrow"><span class="mlabel">R</span>
+          <div class="mtrack"><div class="mmid"></div>
+            <div class="mfill" id="mob-fill-r"></div>
+            <span class="mval" id="mob-val-r">+0.00</span></div></div>
+      </div>
+      <div class="mob-section" style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px">
+        <button onclick="sendCmd('aruco_toggle')" id="mob-btn-aruco">ArUco: OFF</button>
+        <button onclick="sendCmd('rotate_ccw')">↺ CCW</button>
+        <button onclick="sendCmd('rotate_cw')">↻ CW</button>
+        <button onclick="toggleMobBearing()" id="mob-btn-bearing">Bearing: OFF</button>
+        <button onclick="sendCmd('gps_bookmark')">📍 Bookmark</button>
+      </div>
+      <div class="mob-section" style="font-size:12px;padding:5px 8px">
+        <span id="mob-nav-info" style="color:var(--gray)"></span>
+      </div>
+    </div>
+
+    <div class="mob-page" id="mob-telem">
+      <div class="mob-section">
+        <div class="mob-title">Telemetry</div>
+        <div class="tgrid">
+          <div class="field"><label>Voltage</label><span id="mob-volt">--</span></div>
+          <div class="field"><label>Current</label><span id="mob-curr">--</span></div>
+        </div>
+        <div class="tgrid three">
+          <div class="field"><label>Board</label><span id="mob-board">--</span></div>
+          <div class="field"><label>Left</label><span id="mob-ltmp">--</span></div>
+          <div class="field"><label>Right</label><span id="mob-rtmp">--</span></div>
+        </div>
+        <div class="tgrid">
+          <div class="field">
+            <label>IMU Heading</label>
+            <div class="compass-wrap">
+              <canvas class="compass-canvas" id="mob-compass" width="32" height="32"></canvas>
+              <span id="mob-hdg-text" style="font-size:13px;color:var(--cyan)">---</span>
+            </div>
+          </div>
+          <div class="field"><label>Faults</label><span id="mob-fault" style="color:var(--green)">OK</span></div>
+        </div>
+        <div class="tgrid">
+          <div class="field"><label>Pitch</label><span id="mob-pitch" style="color:var(--gray)">---</span></div>
+          <div class="field"><label>Roll</label><span id="mob-roll" style="color:var(--gray)">---</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mob-page" id="mob-gps">
+      <div class="mob-section">
+        <div class="mob-title">GPS</div>
+        <div class="ggrid">
+          <div class="field"><label>Latitude</label><span id="mob-lat">--</span></div>
+          <div class="field"><label>Altitude</label><span id="mob-alt">--</span></div>
+          <div class="field"><label>Longitude</label><span id="mob-lon">--</span></div>
+          <div class="field"><label>H-Error</label><span id="mob-herr">--</span></div>
+        </div>
+        <div class="ggrid three">
+          <div class="field"><label>Fix</label><span id="mob-fix">--</span></div>
+          <div class="field"><label>Sats</label><span id="mob-sats">--</span></div>
+          <div class="field"><label>HDOP</label><span id="mob-hdop">--</span></div>
+        </div>
+        <div style="padding:6px 8px">
+          <button onclick="sendCmd('gps_bookmark')">📍 Bookmark GPS position</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mob-page" id="mob-sys">
+      <div class="mob-section">
+        <div class="mob-title">System</div>
+        <div class="sys-row"><label>CPU</label>
+          <div class="sys-track"><div class="sys-fill" id="mob-cpu-fill"></div>
+            <span class="sys-val" id="mob-cpu-val">--</span></div></div>
+        <div class="sys-row" style="padding:3px 8px">
+          <label>Temp</label>
+          <span id="mob-temp" style="font-size:13px;margin-left:5px">--</span>
+          <span id="mob-freq" style="font-size:10px;color:var(--gray);margin-left:8px">--</span>
+        </div>
+        <div class="sys-row"><label>Mem</label>
+          <div class="sys-track"><div class="sys-fill" id="mob-mem-fill"></div>
+            <span class="sys-val" id="mob-mem-val">--</span></div></div>
+        <div class="sys-row"><label>Disk</label>
+          <div class="sys-track"><div class="sys-fill" id="mob-disk-fill"></div>
+            <span class="sys-val" id="mob-disk-val">--</span></div></div>
+      </div>
+      <div class="mob-section" style="flex:1;display:flex;flex-direction:column;min-height:180px">
+        <div class="mob-title">LiDAR</div>
+        <canvas id="mob-lidar-canvas" class="lidar-canvas" style="flex:1;min-height:150px"></canvas>
+      </div>
+    </div>
+
+    <div class="mob-page" id="mob-logs">
+      <div class="log-toolbar">
+        <input class="log-filter" id="mob-log-filter" type="search" placeholder="Filter…"
+               oninput="filterLog('mob-log-box','mob-log-filter')">
+        <button onclick="logAutoScroll=!logAutoScroll;this.style.color=logAutoScroll?'var(--cyan)':'var(--gray)'" style="color:var(--cyan)">↓</button>
+      </div>
+      <div class="log-box" id="mob-log-box"></div>
+    </div>
+
+  </div><!-- /mob-tabs -->
+</div><!-- /main -->
+
+<!-- Mobile tab bar -->
+<div id="tab-bar">
+  <button class="tab-btn active" id="tab-drive" onclick="showTab('drive')">Drive</button>
+  <button class="tab-btn" id="tab-telem" onclick="showTab('telem')">Telem</button>
+  <button class="tab-btn" id="tab-gps"   onclick="showTab('gps')">GPS</button>
+  <button class="tab-btn" id="tab-sys"   onclick="showTab('sys')">System</button>
+  <button class="tab-btn" id="tab-logs"  onclick="showTab('logs')">Logs</button>
+</div>
+
+<!-- Panel chooser overlay -->
+<div id="chooser">
+  <div id="chooser-box">
+    <div id="chooser-title">Select panel</div>
+    <div id="chooser-grid"></div>
+    <button id="chooser-cancel" onclick="closeChooser()">Cancel</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Palette ───────────────────────────────────────────────────────────────────
+const C = {
+  green:'#3cdc50', yellow:'#f0c828', orange:'#f08c28',
+  red:'#dc3c3c',   cyan:'#3cc8dc',   gray:'#82829a',
+  border:'#3c3c5a', bg:'#12121e', white:'#e6e6f0', purple:'#b450dc',
+};
+const MODE_COLORS = { MANUAL:C.yellow, AUTO:C.green, ESTOP:C.red };
+const FIX_COLORS  = {0:C.red,1:C.yellow,2:C.orange,3:C.orange,4:C.green,5:C.cyan};
+const NAV_COLORS  = {
+  SEARCHING:C.yellow, ALIGNING:C.orange, APPROACHING:C.green,
+  PASSING:C.cyan, COMPLETE:C.green, ERROR:C.red, IDLE:C.gray,
+  WAITING_FIX:C.yellow, NAVIGATING:C.green, ARRIVED:C.cyan,
+};
+
+const el  = id => document.getElementById(id);
+const fmt = (v, d, u) => v == null ? '--' : v.toFixed(d) + (u || '');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let lastState       = null;
+let showBearing     = false;
+let mobShowBearing  = false;
+let logAutoScroll   = true;
+let logPolling      = null;
+
+// ── Quad panel system ─────────────────────────────────────────────────────────
+// Panel type strings: 'camera:front_left', 'camera:front_right', 'camera:rear',
+//                     'lidar', 'motor', 'telemetry', 'gps', 'system', 'logs'
+const PANEL_DEFS = [
+  { type:'camera:front_left',  label:'Camera FL'   },
+  { type:'camera:front_right', label:'Camera FR'   },
+  { type:'camera:rear',        label:'Camera Rear' },
+  { type:'lidar',              label:'LiDAR'       },
+  { type:'motor',              label:'Motors'      },
+  { type:'telemetry',          label:'Telemetry'   },
+  { type:'gps',                label:'GPS'         },
+  { type:'system',             label:'System'      },
+  { type:'logs',               label:'Logs'        },
+];
+
+// Default layout — overridden by preset buttons
+let quadTypes = ['camera:front_left', 'camera:front_right', 'camera:rear', 'lidar'];
+let expandedQuad = -1;
+let chooserQuad  = -1;
+
+// Tap tracking for double-tap detection
+const tapTimes = [0, 0, 0, 0];
+
+// ── Panel HTML builders ───────────────────────────────────────────────────────
+function htmlCamera(i, camKey) {
+  const camSlug = camKey.replace(':','_');
+  return `
+    <div class="cam-wrap">
+      <img class="cam-img" id="q${i}-cam-img" src="/stream/${camKey}" alt="">
+      <span class="cam-nosig" id="q${i}-cam-nosig">No camera</span>
+      <div class="cam-paused" id="q${i}-cam-paused" style="display:none">⏸ Stream paused</div>
+      <canvas class="bearing-canvas" id="q${i}-bearing-canvas"></canvas>
+      <div class="cam-rec-dot" id="q${i}-cam-rec-dot"></div>
+      <div class="cam-nav-badge" id="q${i}-cam-nav-badge"></div>
+    </div>`;
+}
+function htmlMotor(i) {
+  return `
+    <div class="mrow"><span class="mlabel">L</span>
+      <div class="mtrack"><div class="mmid"></div>
+        <div class="mfill" id="q${i}-fill-l"></div>
+        <span class="mval" id="q${i}-val-l">+0.00</span></div></div>
+    <div class="mrow"><span class="mlabel">R</span>
+      <div class="mtrack"><div class="mmid"></div>
+        <div class="mfill" id="q${i}-fill-r"></div>
+        <span class="mval" id="q${i}-val-r">+0.00</span></div></div>`;
+}
+function htmlTelemetry(i) {
+  return `
+    <div class="tgrid">
+      <div class="field"><label>Voltage</label><span id="q${i}-volt">--</span></div>
+      <div class="field"><label>Current</label><span id="q${i}-curr">--</span></div>
+    </div>
+    <div class="tgrid three">
+      <div class="field"><label>Board</label><span id="q${i}-board">--</span></div>
+      <div class="field"><label>Left</label><span id="q${i}-ltmp">--</span></div>
+      <div class="field"><label>Right</label><span id="q${i}-rtmp">--</span></div>
+    </div>
+    <div class="tgrid">
+      <div class="field"><label>Heading</label>
+        <div class="compass-wrap">
+          <canvas class="compass-canvas" id="q${i}-compass" width="32" height="32"></canvas>
+          <span id="q${i}-hdg" style="font-size:13px;color:var(--cyan)">---</span>
+        </div>
+      </div>
+      <div class="field"><label>Faults</label><span id="q${i}-fault" style="color:var(--green)">OK</span></div>
+    </div>
+    <div class="tgrid">
+      <div class="field"><label>Pitch</label><span id="q${i}-pitch" style="color:var(--gray)">---</span></div>
+      <div class="field"><label>Roll</label><span id="q${i}-roll"  style="color:var(--gray)">---</span></div>
+    </div>`;
+}
+function htmlGps(i) {
+  return `
+    <div class="ggrid">
+      <div class="field"><label>Latitude</label><span id="q${i}-lat">--</span></div>
+      <div class="field"><label>Altitude</label><span id="q${i}-alt">--</span></div>
+      <div class="field"><label>Longitude</label><span id="q${i}-lon">--</span></div>
+      <div class="field"><label>H-Error</label><span id="q${i}-herr">--</span></div>
+    </div>
+    <div class="ggrid three">
+      <div class="field"><label>Fix</label><span id="q${i}-fix">--</span></div>
+      <div class="field"><label>Sats</label><span id="q${i}-sats">--</span></div>
+      <div class="field"><label>HDOP</label><span id="q${i}-hdop">--</span></div>
+    </div>
+    <div style="padding:5px 8px">
+      <span id="q${i}-nav-info" style="font-size:11px;color:var(--gray)"></span>
+    </div>`;
+}
+function htmlSystem(i) {
+  return `
+    <div class="sys-row"><label>CPU</label>
+      <div class="sys-track"><div class="sys-fill" id="q${i}-cpu-fill"></div>
+        <span class="sys-val" id="q${i}-cpu-val">--</span></div></div>
+    <div class="sys-row" style="padding:3px 8px">
+      <label>Temp</label><span id="q${i}-temp" style="font-size:13px;margin-left:5px">--</span>
+      <span id="q${i}-freq" style="font-size:10px;color:var(--gray);margin-left:8px">--</span>
+    </div>
+    <div class="sys-row"><label>Mem</label>
+      <div class="sys-track"><div class="sys-fill" id="q${i}-mem-fill"></div>
+        <span class="sys-val" id="q${i}-mem-val">--</span></div></div>
+    <div class="sys-row"><label>Disk</label>
+      <div class="sys-track"><div class="sys-fill" id="q${i}-disk-fill"></div>
+        <span class="sys-val" id="q${i}-disk-val">--</span></div></div>`;
+}
+function htmlLidar(i) {
+  return `<canvas id="q${i}-lidar-canvas" class="lidar-canvas"></canvas>`;
+}
+function htmlLogs(i) {
+  return `
+    <div class="log-toolbar">
+      <input class="log-filter" id="q${i}-log-filter" type="search" placeholder="Filter…"
+             oninput="filterLog('q${i}-log-box','q${i}-log-filter')">
+      <button onclick="logAutoScroll=!logAutoScroll;this.style.color=logAutoScroll?'var(--cyan)':'var(--gray)'" style="color:var(--cyan)">↓</button>
+    </div>
+    <div class="log-box" id="q${i}-log-box"></div>`;
+}
+
+// ── Render quad ───────────────────────────────────────────────────────────────
+function renderQuad(i) {
+  const type   = quadTypes[i];
+  const [kind, camKey] = type.includes(':') ? type.split(':') : [type, null];
+  const def    = PANEL_DEFS.find(p => p.type === type) || { label: type };
+  const titleEl = el(`q${i}-title`);
+  if (titleEl) titleEl.textContent = def.label;
+
+  // Build header buttons per panel type
+  const hdr = el(`q${i}-hdr`);
+  if (hdr) {
+    // Preserve title span, rebuild buttons
+    const titleSpan = hdr.querySelector('.quad-title');
+    hdr.innerHTML = '';
+    hdr.appendChild(titleSpan);
+    if (kind === 'camera') {
+      hdr.innerHTML += `
+        <button onclick="sendCmd('aruco_toggle')" style="font-size:10px" id="q${i}-btn-aruco">ArUco</button>
+        <button onclick="sendCmd('rotate_ccw')" style="font-size:10px">↺</button>
+        <button onclick="sendCmd('rotate_cw')"  style="font-size:10px">↻</button>
+        <button onclick="toggleBearing(${i})" id="q${i}-btn-bearing" style="font-size:10px">Bearing</button>
+        <button onclick="sendCmd('record_toggle',{cam:'${camKey}'})" id="q${i}-btn-rec" style="font-size:10px">⏺</button>
+        <button onclick="sendCmd('record_stop',{cam:'${camKey}'})" style="font-size:10px" title="Stop recording">⏹</button>
+        <button onclick="toggleStream(${i})" id="q${i}-btn-stream" style="font-size:10px" title="Pause/resume stream">📷</button>`;
+    }
+  }
+
+  // Build body
+  const body = el(`q${i}-body`);
+  if (!body) return;
+  let html = '';
+  if      (kind === 'camera')   html = htmlCamera(i, camKey);
+  else if (kind === 'motor')    html = htmlMotor(i);
+  else if (kind === 'telemetry')html = htmlTelemetry(i);
+  else if (kind === 'gps')      html = htmlGps(i);
+  else if (kind === 'system')   html = htmlSystem(i);
+  else if (kind === 'lidar')    html = htmlLidar(i);
+  else if (kind === 'logs')     html = htmlLogs(i);
+  body.innerHTML = html;
+
+  if (kind === 'lidar') resizeLidar(`q${i}-lidar-canvas`);
+  if (kind === 'camera') {
+    const img = el(`q${i}-cam-img`);
+    if (img) img.addEventListener('load', function(){
+      if (this.naturalWidth) camNatW = this.naturalWidth;
+      if (this.naturalHeight) camNatH = this.naturalHeight;
+    });
+  }
+  if (kind === 'logs') startLogPolling();
+}
+
+function renderAllQuads() {
+  for (let i = 0; i < 4; i++) renderQuad(i);
+}
+
+// ── Update functions ──────────────────────────────────────────────────────────
+let camNatW = 640, camNatH = 480;
+
+function updateBar(fillId, valId, v) {
+  const fill = el(fillId), valE = el(valId);
+  if (!fill || !valE) return;
+  const color = v > 0 ? C.green : v < 0 ? C.orange : null;
+  if (v >= 0) { fill.style.left='50%';         fill.style.width=(v*50)+'%'; }
+  else        { fill.style.left=(50+v*50)+'%'; fill.style.width=(-v*50)+'%'; }
+  fill.style.backgroundColor = color || 'transparent';
+  valE.textContent = (v>=0?'+':'')+v.toFixed(2);
+  valE.style.color = color || C.gray;
+}
+
+function pctColor(p,w,c){ return p>=c?C.red:p>=w?C.yellow:C.green; }
+function sysBar(fid, vid, pct, lbl, color) {
+  const f=el(fid); if(!f) return;
+  f.style.width=Math.min(pct,100)+'%'; f.style.backgroundColor=color;
+  const v=el(vid); if(!v) return;
+  v.textContent=lbl; v.style.color=pct>55?C.bg:color;
+}
+
+// Track which quad streams are paused (src cleared)
+const streamPaused = {};
+function toggleStream(i) {
+  const img     = el(`q${i}-cam-img`);
+  const btn     = el(`q${i}-btn-stream`);
+  const overlay = el(`q${i}-cam-paused`);
+  if (!img) return;
+  if (streamPaused[i]) {
+    const type = quadTypes[i];
+    const camKey = type.includes(':') ? type.split(':')[1] : null;
+    if (camKey) img.src = '/stream/' + camKey;
+    streamPaused[i] = false;
+    if (btn)     { btn.textContent = '📷'; btn.style.color = ''; }
+    if (overlay)   overlay.style.display = 'none';
+  } else {
+    img.src = '';
+    streamPaused[i] = true;
+    if (btn)     { btn.textContent = '▶'; btn.style.color = 'var(--green)'; }
+    if (overlay)   overlay.style.display = 'block';
+  }
+}
+function stopAllStreams() {
+  for (let i = 0; i < 4; i++) {
+    const type = quadTypes[i];
+    if (type && type.startsWith('camera:') && !streamPaused[i]) toggleStream(i);
+  }
+}
+
+function updateCameraPanel(i, camKey, s) {
+  const okKey  = camKey==='front_left'?'cam_fl_ok' : camKey==='front_right'?'cam_fr_ok':'cam_re_ok';
+  const recKey = camKey==='front_left'?'cam_fl_rec': camKey==='front_right'?'cam_fr_rec':'cam_re_rec';
+  const ok  = !!s[okKey];
+  const rec = !!s[recKey];
+
+  const imgEl = el(`q${i}-cam-img`);
+  if (!imgEl) return;
+  imgEl.style.display       = ok ? 'block' : 'none';
+  const nosig = el(`q${i}-cam-nosig`); if(nosig) nosig.style.display = ok?'none':'block';
+  const dot   = el(`q${i}-cam-rec-dot`);
+  if (dot) dot.style.display = rec ? 'block' : 'none';
+
+  // Nav badge
+  const badge = el(`q${i}-cam-nav-badge`);
+  if (badge) updateNavBadgeEl(badge, s);
+
+  // Bearing overlay (only front_left)
+  const bCanvas = el(`q${i}-bearing-canvas`);
+  if (bCanvas) {
+    const show = showBearing && s.aruco_enabled && camKey === 'front_left';
+    bCanvas.style.display = show ? 'block' : 'none';
+    if (show) drawBearingOverlay(bCanvas, s.aruco, s.nav_gate, s.telemetry.heading);
+  }
+}
+
+function updateMotorPanel(i, s) {
+  updateBar(`q${i}-fill-l`, `q${i}-val-l`, s.drive.left);
+  updateBar(`q${i}-fill-r`, `q${i}-val-r`, s.drive.right);
+}
+
+function updateTelemPanel(i, s) {
+  const t = s.telemetry;
+  const se = (id, v) => { const e=el(id); if(e) e.textContent=v; };
+  se(`q${i}-volt`,  fmt(t.voltage,1,' V'));
+  se(`q${i}-curr`,  fmt(t.current,2,' A'));
+  se(`q${i}-board`, fmt(t.board_temp,0,'°C'));
+  se(`q${i}-ltmp`,  fmt(t.left_temp,0,'°C'));
+  se(`q${i}-rtmp`,  fmt(t.right_temp,0,'°C'));
+  const fault = t.left_fault||t.right_fault;
+  const fEl = el(`q${i}-fault`);
+  if (fEl){ fEl.textContent=(t.left_fault?'FAULT-L ':'')+(t.right_fault?'FAULT-R':'')||'OK';
+            fEl.style.color=fault?C.red:C.green; }
+  const hdgEl = el(`q${i}-hdg`);
+  if (hdgEl) { hdgEl.textContent=t.heading!=null?t.heading.toFixed(1)+'°':'---';
+               hdgEl.style.color=t.heading!=null?C.cyan:C.gray; }
+  drawCompass(el(`q${i}-compass`), t.heading);
+  const pitEl=el(`q${i}-pitch`);
+  if (pitEl){ pitEl.textContent=t.pitch!=null?(t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°':'---';
+              pitEl.style.color=t.pitch!=null?C.cyan:C.gray; }
+  const rolEl=el(`q${i}-roll`);
+  if (rolEl){ rolEl.textContent=t.roll!=null?(t.roll>=0?'+':'')+t.roll.toFixed(1)+'°':'---';
+              rolEl.style.color=t.roll!=null?C.cyan:C.gray; }
+}
+
+function updateGpsPanel(i, s) {
+  const g=s.gps, ok=s.gps_ok;
+  const fixColor=FIX_COLORS[g.fix_quality]||C.gray;
+  const se=(id,v,c)=>{ const e=el(id); if(!e)return; e.textContent=v; if(c)e.style.color=c; };
+  se(`q${i}-lat`,  g.latitude  !=null ? g.latitude.toFixed(7)  : '--');
+  se(`q${i}-lon`,  g.longitude !=null ? g.longitude.toFixed(7) : '--');
+  se(`q${i}-alt`,  g.altitude  !=null ? g.altitude.toFixed(1)+' m' : '--');
+  se(`q${i}-herr`, g.h_error_m !=null ? g.h_error_m.toFixed(3)+' m' : '--');
+  se(`q${i}-sats`, g.satellites!=null ? g.satellites+(g.satellites_view?'/'+g.satellites_view:'') : '--');
+  se(`q${i}-hdop`, fmt(g.hdop,2));
+  se(`q${i}-fix`,  ok ? g.fix_quality_name : 'No GPS', ok?fixColor:C.gray);
+  const ni=el(`q${i}-nav-info`); if(ni) updateNavInfoEl(ni, s);
+}
+
+function updateSystemPanel(i, s) {
+  const sys=s.system;
+  const cpu=pctColor(sys.cpu_percent,60,85);
+  const mem=pctColor(sys.mem_percent,70,90);
+  const dsk=pctColor(sys.disk_percent,70,90);
+  sysBar(`q${i}-cpu-fill`,`q${i}-cpu-val`,sys.cpu_percent,`${sys.cpu_percent.toFixed(0)}%`,cpu);
+  sysBar(`q${i}-mem-fill`,`q${i}-mem-val`,sys.mem_percent,
+    `${sys.mem_percent.toFixed(0)}% ${(sys.mem_used_mb/1024).toFixed(1)}/${(sys.mem_total_mb/1024).toFixed(1)}GB`,mem);
+  sysBar(`q${i}-disk-fill`,`q${i}-disk-val`,sys.disk_percent,
+    `${sys.disk_percent.toFixed(0)}% ${sys.disk_used_gb.toFixed(1)}/${sys.disk_total_gb.toFixed(1)}GB`,dsk);
+  const te=el(`q${i}-temp`); if(te){te.textContent=`${sys.cpu_temp_c.toFixed(0)}°C`;
+    te.style.color=sys.cpu_temp_c<60?C.green:sys.cpu_temp_c<75?C.yellow:C.red;}
+  const fe=el(`q${i}-freq`); if(fe) fe.textContent=`${sys.cpu_freq_mhz.toFixed(0)} MHz`;
+}
+
+function updateLidarPanel(i, s) {
+  const c = el(`q${i}-lidar-canvas`); if(!c) return;
+  drawLidar(c, s.lidar.angles, s.lidar.distances);
+}
+
+// ── Shared nav helpers ────────────────────────────────────────────────────────
+function updateNavBadgeEl(badge, s) {
+  const autoCamera = s.mode==='AUTO' && (s.auto_type==='Camera'||s.auto_type==='Cam+GPS');
+  const autoGps    = s.mode==='AUTO' && (s.auto_type==='GPS'   ||s.auto_type==='Cam+GPS');
+  if (!autoCamera && !autoGps) { badge.style.display='none'; return; }
+  const nc = NAV_COLORS[s.nav_state]||C.gray;
+  let txt;
+  if (autoGps && s.nav_state && s.nav_state!=='IDLE') {
+    txt = `GPS:${s.nav_state} WP:${s.nav_wp}`;
+    if (s.nav_wp_dist!=null) txt += ` ${s.nav_wp_dist.toFixed(1)}m`;
+    if (s.nav_wp_bear!=null) txt += ` ${s.nav_wp_bear.toFixed(0)}°`;
+  } else {
+    txt = `${s.nav_state} G${s.nav_gate}`;
+    if (s.nav_bearing_err!=null) txt += ` ${s.nav_bearing_err>=0?'+':''}${s.nav_bearing_err.toFixed(1)}°`;
+  }
+  badge.textContent=txt; badge.style.color=nc; badge.style.display='block';
+}
+function updateNavInfoEl(el2, s) {
+  if (!el2) return;
+  const autoGps = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
+  if (!s.nav_state || s.nav_state==='IDLE') { el2.textContent=''; return; }
+  const nc=NAV_COLORS[s.nav_state]||C.gray;
+  let txt = autoGps ? `GPS:${s.nav_state} WP${s.nav_wp}` : `NAV:${s.nav_state} G${s.nav_gate}`;
+  if (autoGps && s.nav_wp_dist!=null) txt += ` ${s.nav_wp_dist.toFixed(1)}m`;
+  el2.textContent=txt; el2.style.color=nc;
+}
+
+// ── Apply state to all quads ──────────────────────────────────────────────────
+function updateAllQuads(s) {
+  for (let i = 0; i < 4; i++) {
+    const type = quadTypes[i];
+    const [kind, camKey] = type.includes(':') ? type.split(':') : [type, null];
+    if      (kind==='camera')    updateCameraPanel(i, camKey, s);
+    else if (kind==='motor')     updateMotorPanel(i, s);
+    else if (kind==='telemetry') updateTelemPanel(i, s);
+    else if (kind==='gps')       updateGpsPanel(i, s);
+    else if (kind==='system')    updateSystemPanel(i, s);
+    else if (kind==='lidar')     updateLidarPanel(i, s);
+    // logs: updated by polling, not state
+  }
+}
+
+// ── Mobile update ─────────────────────────────────────────────────────────────
+function updateMobile(s) {
+  const t=s.telemetry, g=s.gps, sys=s.system;
+  const ok = s.cam_fl_ok;
+  const se=(id,v,c)=>{ const e=el(id); if(!e)return; e.textContent=v; if(c)e.style.color=c; };
+
+  // Drive tab
+  const mi=el('mob-cam-img');
+  if(mi){ mi.style.display=ok?'block':'none'; }
+  const mn=el('mob-cam-nosig'); if(mn) mn.style.display=ok?'none':'block';
+  const md=el('mob-cam-rec-dot'); if(md) md.style.display=s.cam_fl_rec?'block':'none';
+  const mbadge=el('mob-cam-nav-badge'); if(mbadge) updateNavBadgeEl(mbadge,s);
+  updateBar('mob-fill-l','mob-val-l',s.drive.left);
+  updateBar('mob-fill-r','mob-val-r',s.drive.right);
+  const aBtn=el('mob-btn-aruco');
+  if(aBtn){ aBtn.textContent=s.aruco_enabled?'ArUco: ON':'ArUco: OFF';
+            aBtn.style.color=s.aruco_enabled?C.green:C.gray; }
+  const ni=el('mob-nav-info'); if(ni) updateNavInfoEl(ni,s);
+
+  // Bearing overlay on mobile
+  const mc=el('mob-bearing-canvas');
+  if(mc){
+    const show=mobShowBearing&&s.aruco_enabled;
+    mc.style.display=show?'block':'none';
+    if(show) drawBearingOverlay(mc,s.aruco,s.nav_gate,t.heading);
+  }
+
+  // Telem tab
+  se('mob-volt',  fmt(t.voltage,1,' V'));
+  se('mob-curr',  fmt(t.current,2,' A'));
+  se('mob-board', fmt(t.board_temp,0,'°C'));
+  se('mob-ltmp',  fmt(t.left_temp,0,'°C'));
+  se('mob-rtmp',  fmt(t.right_temp,0,'°C'));
+  const fault=t.left_fault||t.right_fault;
+  se('mob-fault',(t.left_fault?'FAULT-L ':'')+(t.right_fault?'FAULT-R':'')||'OK',fault?C.red:C.green);
+  se('mob-hdg-text',t.heading!=null?t.heading.toFixed(1)+'°':'---',t.heading!=null?C.cyan:C.gray);
+  drawCompass(el('mob-compass'),t.heading);
+  se('mob-pitch',t.pitch!=null?(t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°':'---',t.pitch!=null?C.cyan:C.gray);
+  se('mob-roll', t.roll !=null?(t.roll>=0?'+':'')+t.roll.toFixed(1)+'°':'---',t.roll !=null?C.cyan:C.gray);
+
+  // GPS tab
+  const fixColor=FIX_COLORS[g.fix_quality]||C.gray;
+  se('mob-lat',  g.latitude !=null ? g.latitude.toFixed(7) : '--');
+  se('mob-lon',  g.longitude!=null ? g.longitude.toFixed(7): '--');
+  se('mob-alt',  g.altitude !=null ? g.altitude.toFixed(1)+' m':'--');
+  se('mob-herr', g.h_error_m!=null ? g.h_error_m.toFixed(3)+' m':'--');
+  se('mob-sats', g.satellites!=null ? g.satellites+(g.satellites_view?'/'+g.satellites_view:''):'--');
+  se('mob-hdop', fmt(g.hdop,2));
+  se('mob-fix',  s.gps_ok ? g.fix_quality_name : 'No GPS', s.gps_ok?fixColor:C.gray);
+
+  // System tab
+  const cpu=pctColor(sys.cpu_percent,60,85);
+  const mem=pctColor(sys.mem_percent,70,90);
+  const dsk=pctColor(sys.disk_percent,70,90);
+  sysBar('mob-cpu-fill','mob-cpu-val',sys.cpu_percent,`${sys.cpu_percent.toFixed(0)}%`,cpu);
+  sysBar('mob-mem-fill','mob-mem-val',sys.mem_percent,
+    `${sys.mem_percent.toFixed(0)}% ${(sys.mem_used_mb/1024).toFixed(1)}/${(sys.mem_total_mb/1024).toFixed(1)}GB`,mem);
+  sysBar('mob-disk-fill','mob-disk-val',sys.disk_percent,
+    `${sys.disk_percent.toFixed(0)}% ${sys.disk_used_gb.toFixed(1)}/${sys.disk_total_gb.toFixed(1)}GB`,dsk);
+  const te=el('mob-temp');
+  if(te){te.textContent=`${sys.cpu_temp_c.toFixed(0)}°C`;
+    te.style.color=sys.cpu_temp_c<60?C.green:sys.cpu_temp_c<75?C.yellow:C.red;}
+  const fe=el('mob-freq'); if(fe) fe.textContent=`${sys.cpu_freq_mhz.toFixed(0)} MHz`;
+  drawLidar(el('mob-lidar-canvas'),s.lidar.angles,s.lidar.distances);
+}
+
+// ── applyState ────────────────────────────────────────────────────────────────
+function applyState(s) {
+  lastState = s;
+  updateStatusBar(s);
+  el('no-motors-banner').style.display = s.no_motors ? 'block' : 'none';
+  updateAllQuads(s);
+  updateMobile(s);
+}
+
+// ── Status bar ────────────────────────────────────────────────────────────────
+function updateStatusBar(s) {
+  const mc = MODE_COLORS[s.mode]||C.gray;
+  const mEl=el('sb-mode');
+  mEl.textContent = s.mode==='AUTO' ? `AUTO·${s.auto_type}` : s.mode;
+  mEl.style.color = mEl.style.borderColor = mc;
+  el('sb').style.borderColor = mc;
+
+  const volt=s.telemetry.voltage;
+  const vc=volt!=null ? (volt<10.5?C.red:volt<11.5?C.yellow:C.green) : C.gray;
+  const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
+
+  const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
+  re.style.color=s.rc_active?C.green:C.gray;
+
+  el('sb-rec').style.display  = s.cam_recording  ? 'inline' : 'none';
+  el('sb-dlog').style.display = s.data_logging   ? 'inline' : 'none';
+
+  const bm=el('btn-mode');
+  bm.textContent = s.mode==='AUTO' ? 'SET MANUAL' : 'SET AUTO';
+  bm.style.color = bm.style.borderColor = s.mode==='AUTO' ? C.green : C.yellow;
+
+  const br=el('btn-rec');
+  if(br){ br.style.color=s.cam_recording?C.red:C.gray;
+          br.style.borderColor=s.cam_recording?C.red:C.border; }
+  const bd=el('btn-dlog');
+  if(bd){ bd.style.color=s.data_logging?C.purple:C.gray;
+          bd.style.borderColor=s.data_logging?C.purple:C.border; }
+}
+
+// ── Mode toggle ───────────────────────────────────────────────────────────────
+function toggleMode() {
+  if (!lastState) return;
+  sendCmd(lastState.mode==='AUTO' ? 'set_mode' : 'set_mode',
+          lastState.mode==='AUTO' ? {mode:'MANUAL'} : {mode:'AUTO'});
+}
+
+// ── Bearing overlay toggle ────────────────────────────────────────────────────
+function toggleBearing(quadIdx) {
+  showBearing = !showBearing;
+  const btn=el(`q${quadIdx}-btn-bearing`);
+  if(btn){ btn.style.color=showBearing?C.cyan:C.gray;
+           btn.style.borderColor=showBearing?C.cyan:C.border; }
+  if(!showBearing) {
+    const c=el(`q${quadIdx}-bearing-canvas`);
+    if(c){ const ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
+           c.style.display='none'; }
+  }
+  if(lastState) applyState(lastState);
+}
+function toggleMobBearing() {
+  mobShowBearing = !mobShowBearing;
+  const b=el('mob-btn-bearing');
+  if(b){ b.textContent=mobShowBearing?'Bearing: ON':'Bearing: OFF';
+         b.style.color=mobShowBearing?C.cyan:C.gray; }
+  if(lastState) applyState(lastState);
+}
+
+// ── Canvas drawing ────────────────────────────────────────────────────────────
+function drawCompass(canvas, heading) {
+  if (!canvas) return;
+  const ctx=canvas.getContext('2d'), w=canvas.width, h=canvas.height, cx=w/2, cy=h/2, r=Math.min(w,h)/2-2;
+  ctx.clearRect(0,0,w,h);
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle=C.border; ctx.lineWidth=1; ctx.stroke();
+  ctx.strokeStyle=C.red; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(cx,cy-r+1); ctx.lineTo(cx,cy-r+5); ctx.stroke();
+  canvas.style.opacity = heading!=null ? '1' : '0.3';
+  if (heading==null) return;
+  const rad=(heading-90)*Math.PI/180;
+  ctx.strokeStyle=C.cyan; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(cx,cy);
+  ctx.lineTo(cx+r*Math.cos(rad), cy+r*Math.sin(rad)); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,2,0,Math.PI*2);
+  ctx.fillStyle=C.cyan; ctx.fill();
+}
+
+function resizeLidar(canvasId) {
+  const c=el(canvasId); if(!c) return;
+  const p=c.parentElement; if(!p) return;
+  const side=Math.min(p.clientWidth-10, p.clientHeight-10);
+  if(side>20){ c.width=p.clientWidth-10; c.height=Math.max(side,80); }
+}
+
+function drawLidar(canvas, angles, distances) {
+  if (!canvas) return;
+  const ctx=canvas.getContext('2d'), W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,W,H);
+  const cx=W/2, cy=H/2+8, r=Math.min(W,H)/2-24;
+  if (!angles||angles.length===0) {
+    ctx.fillStyle=C.gray; ctx.font='12px monospace';
+    ctx.textAlign='center'; ctx.fillText('No lidar data',cx,cy); return;
+  }
+  const maxDist=Math.max(...distances)||1;
+  for (const frac of [0.25,0.5,0.75,1.0]) {
+    ctx.beginPath(); ctx.arc(cx,cy,r*frac,0,Math.PI*2);
+    ctx.strokeStyle=C.border; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle=C.border; ctx.font='9px monospace'; ctx.textAlign='left';
+    ctx.fillText((maxDist*frac/1000).toFixed(1)+'m',cx+r*frac+2,cy-3);
+  }
+  ctx.strokeStyle=C.border; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(cx,cy-r); ctx.lineTo(cx,cy+r);
+  ctx.moveTo(cx-r,cy); ctx.lineTo(cx+r,cy); ctx.stroke();
+  ctx.fillStyle=C.gray; ctx.font='10px monospace'; ctx.textAlign='center';
+  ctx.fillText('N',cx,cy-r-3); ctx.fillText('S',cx,cy+r+11);
+  ctx.textAlign='left'; ctx.fillText('E',cx+r+2,cy+4);
+  ctx.fillText('W',cx-r-12,cy+4);
+  for (let i=0;i<angles.length;i++) {
+    const dist=distances[i]; if(dist<=0) continue;
+    const frac=Math.min(dist/maxDist,1.0), pr=frac*r;
+    const rad=angles[i]*Math.PI/180;
+    const px=cx+pr*Math.sin(rad), py=cy-pr*Math.cos(rad);
+    const rr=Math.round(220*(1-frac)+60*frac);
+    const gg=Math.round( 60*(1-frac)+200*frac);
+    const bb=Math.round( 60*(1-frac)+220*frac);
+    ctx.beginPath(); ctx.arc(px,py,2,0,Math.PI*2);
+    ctx.fillStyle=`rgb(${rr},${gg},${bb})`; ctx.fill();
+  }
+  ctx.beginPath(); ctx.arc(cx,cy,5,0,Math.PI*2);
+  ctx.fillStyle=C.green; ctx.fill();
+}
+
+function drawBearingOverlay(canvas, aruco, navGate, heading) {
+  if (!canvas) return;
+  // Resize canvas to match its CSS display size
+  const W=canvas.offsetWidth||canvas.parentElement.clientWidth;
+  const H=canvas.offsetHeight||canvas.parentElement.clientHeight;
+  if(canvas.width!==W) canvas.width=W;
+  if(canvas.height!==H) canvas.height=H;
+  const ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  if (!aruco) return;
+  const sx=W/camNatW, sy=H/camNatH;
+  const fcx=W/2, fcy=H/2;
+  const targetOdd=navGate*2+1, targetEven=navGate*2+2;
+  ctx.font='bold 10px monospace'; ctx.lineWidth=1.5;
+  for (const tag of aruco.tags) {
+    const tx=tag.cx*sx, ty=tag.cy*sy;
+    const isTarget=tag.id===targetOdd||tag.id===targetEven;
+    const color=isTarget?C.cyan:C.yellow;
+    ctx.strokeStyle=color; ctx.globalAlpha=0.7;
+    ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(tx,ty); ctx.stroke();
+    ctx.globalAlpha=1.0;
+    ctx.beginPath(); ctx.arc(tx,ty,4,0,Math.PI*2);
+    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
+    let lbl=`#${tag.id}`;
+    if(tag.bearing!=null) lbl+=` ${tag.bearing>=0?'+':''}${tag.bearing.toFixed(1)}°`;
+    if(tag.distance!=null) lbl+=` ${tag.distance.toFixed(2)}m`;
+    const lx=tx<fcx+W/3 ? tx+6 : tx-ctx.measureText(lbl).width-6;
+    const ly=ty-5;
+    ctx.fillStyle='rgba(18,18,30,.75)';
+    ctx.fillRect(lx-2,ly-11,ctx.measureText(lbl).width+4,13);
+    ctx.fillStyle=color; ctx.fillText(lbl,lx,ly);
+  }
+  for (const gate of aruco.gates) {
+    if(gate.gate_id!==navGate) continue;
+    const gx=gate.centre_x*sx, gy=gate.centre_y*sy;
+    ctx.strokeStyle=C.green; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
+    ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(gx,gy); ctx.stroke();
+    ctx.globalAlpha=1.0;
+    const sz=10; ctx.strokeStyle=C.green; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(gx-sz,gy); ctx.lineTo(gx+sz,gy);
+    ctx.moveTo(gx,gy-sz); ctx.lineTo(gx,gy+sz); ctx.stroke();
+    ctx.beginPath(); ctx.arc(gx,gy,sz,0,Math.PI*2); ctx.stroke();
+    let glbl='AIM';
+    if(gate.bearing!=null) glbl+=` ${gate.bearing>=0?'+':''}${gate.bearing.toFixed(1)}°`;
+    if(gate.distance!=null) glbl+=` ${gate.distance.toFixed(2)}m`;
+    ctx.fillStyle='rgba(18,18,30,.75)';
+    ctx.fillRect(gx+2,gy-20,ctx.measureText(glbl).width+4,13);
+    ctx.fillStyle=C.green; ctx.fillText(glbl,gx+4,gy-9);
+  }
+  // Boresight
+  ctx.strokeStyle=C.gray; ctx.lineWidth=1; ctx.globalAlpha=0.5;
+  ctx.beginPath();
+  ctx.moveTo(fcx-12,fcy); ctx.lineTo(fcx+12,fcy);
+  ctx.moveTo(fcx,fcy-12); ctx.lineTo(fcx,fcy+12); ctx.stroke();
+  ctx.beginPath(); ctx.arc(fcx,fcy,4,0,Math.PI*2); ctx.stroke();
+  ctx.globalAlpha=1.0;
+  // IMU arc
+  if (heading!=null) {
+    const ccx=W/2, ccy=H-24, cr=15;
+    ctx.beginPath(); ctx.arc(ccx,ccy,cr+2,0,Math.PI*2);
+    ctx.fillStyle='rgba(18,18,30,.8)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(ccx,ccy,cr,0,Math.PI*2);
+    ctx.strokeStyle=C.border; ctx.lineWidth=1; ctx.stroke();
+    ctx.strokeStyle=C.red; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(ccx,ccy-cr+2); ctx.lineTo(ccx,ccy-cr+6); ctx.stroke();
+    const nrad=(heading-90)*Math.PI/180;
+    ctx.strokeStyle=C.cyan; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(ccx,ccy);
+    ctx.lineTo(ccx+cr*Math.cos(nrad),ccy+cr*Math.sin(nrad)); ctx.stroke();
+    ctx.font='9px monospace'; ctx.fillStyle=C.cyan; ctx.textAlign='center';
+    ctx.fillText(heading.toFixed(0)+'°',ccx,ccy-cr-3); ctx.textAlign='left';
+  }
+}
+
+// ── Quad interaction ──────────────────────────────────────────────────────────
+function onQuadClick(i) {
+  const now = Date.now();
+  if (now - tapTimes[i] < 400) {
+    // Double-tap → expand/collapse
+    tapTimes[i] = 0;
+    toggleExpand(i);
+  } else {
+    tapTimes[i] = now;
+    // Single tap on header → open chooser (handled by header click)
+  }
+}
+
+function onQuadHeaderClick(i, e) {
+  e.stopPropagation();
+  openChooser(i);
+}
+
+function toggleExpand(i) {
+  if (expandedQuad === i) {
+    expandedQuad = -1;
+    el(`q${i}`).classList.remove('expanded');
+  } else {
+    if (expandedQuad >= 0) el(`q${expandedQuad}`).classList.remove('expanded');
+    expandedQuad = i;
+    el(`q${i}`).classList.add('expanded');
+  }
+  setTimeout(() => {
+    for (let j=0; j<4; j++) {
+      const type=quadTypes[j], [kind]=type.includes(':')?type.split(':'):[type];
+      if (kind==='lidar') resizeLidar(`q${j}-lidar-canvas`);
+    }
+  }, 60);
+}
+
+// Wire quad events
+for (let i=0; i<4; i++) {
+  const q=el(`q${i}`);
+  const h=el(`q${i}-hdr`);
+  q.addEventListener('dblclick', ()=>toggleExpand(i));
+  h.addEventListener('click', e=>{ if(e.target.tagName==='BUTTON') return; e.stopPropagation(); openChooser(i); });
+  // Escape key to collapse
+}
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape'){ if(expandedQuad>=0) toggleExpand(expandedQuad); closeChooser(); }
+  if(e.key==='[') sendCmd('rotate_ccw');
+  if(e.key===']') sendCmd('rotate_cw');
+  if(e.key==='t'||e.key==='T') sendCmd('aruco_toggle');
+  if(e.key==='e'||e.key==='E') sendCmd('estop');
+  if(e.key==='r'||e.key==='R') sendCmd('reset');
+  if(e.key==='1') openChooser(0);
+  if(e.key==='2') openChooser(1);
+  if(e.key==='3') openChooser(2);
+  if(e.key==='4') openChooser(3);
+  if(e.key==='Enter'&&chooserQuad>=0) closeChooser();
+});
+
+// ── Panel chooser ─────────────────────────────────────────────────────────────
+function openChooser(i) {
+  chooserQuad = i;
+  const grid = el('chooser-grid');
+  grid.innerHTML = PANEL_DEFS.map(p =>
+    `<button class="chooser-btn${quadTypes[i]===p.type?' active':''}"
+             onclick="choosePanel(${i},'${p.type}')">${p.label}</button>`
+  ).join('');
+  el('chooser-title').textContent = `Quad ${i+1} — select panel`;
+  el('chooser').classList.add('open');
+}
+function closeChooser() {
+  el('chooser').classList.remove('open');
+  chooserQuad = -1;
+}
+function choosePanel(i, type) {
+  quadTypes[i] = type;
+  closeChooser();
+  renderQuad(i);
+  if (lastState) applyState(lastState);
+}
+
+// ── Preset buttons ────────────────────────────────────────────────────────────
+const PRESET_MAP = {
+  front_left:'camera:front_left', front_right:'camera:front_right',
+  rear:'camera:rear', lidar:'lidar', telemetry:'telemetry',
+  gps_sky:'gps', gps_track:'gps', system:'system', imu:'telemetry',
+  depth_map:'system', motor:'motor', logs:'logs',
+};
+const PRESETS_DEFAULT = {
+  Race:  ['camera:front_left','camera:front_right','camera:rear','lidar'],
+  Setup: ['camera:front_left','camera:front_right','gps','telemetry'],
+  Debug: ['lidar','camera:front_left','telemetry','logs'],
+};
+let activePreset = '';
+
+function buildPresetButtons(presets) {
+  const bar = el('sb-presets');
+  bar.innerHTML = '';
+  for (const name of Object.keys(presets)) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-preset';
+    btn.textContent = name;
+    btn.onclick = () => applyPreset(name, presets);
+    bar.appendChild(btn);
+  }
+}
+function applyPreset(name, presets) {
+  const layout = presets[name];
+  if (!layout) return;
+  layout.forEach((t,i) => { quadTypes[i] = PRESET_MAP[t]||t; });
+  activePreset = name;
+  document.querySelectorAll('.btn-preset').forEach(b=>{
+    b.classList.toggle('active', b.textContent===name);
+  });
+  renderAllQuads();
+  if (lastState) applyState(lastState);
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+async function sendCmd(cmd, extra) {
+  try {
+    await fetch('/api/cmd', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cmd, ...(extra||{})}),
+    });
+  } catch(e){ console.error('cmd failed:',e); }
+}
+
+// ── Mobile tabs ───────────────────────────────────────────────────────────────
+let activeTab = 'drive';
+function showTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.mob-page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  el('mob-'+name).classList.add('active');
+  el('tab-'+name).classList.add('active');
+  if (name==='logs') startLogPolling();
+  else if (logPolling) { clearInterval(logPolling); logPolling=null; }
+  if (name==='sys')   { setTimeout(()=>resizeLidar('mob-lidar-canvas'),50); }
+  if (name==='drive') {
+    // Lazily open the mobile camera stream the first time the Drive tab is shown
+    const mi = el('mob-cam-img');
+    if (mi && !mi.src) mi.src = '/stream/front_left';
+  }
+}
+
+// ── Log viewer ────────────────────────────────────────────────────────────────
+function _logLevel(line) {
+  if(/\bCRITICAL\b/.test(line)) return 'critical';
+  if(/\bERROR\b/.test(line))    return 'error';
+  if(/\bWARNING\b/.test(line))  return 'warning';
+  if(/\bDEBUG\b/.test(line))    return 'debug';
+  return '';
+}
+function filterLog(boxId, filterId) {
+  const q=(el(filterId)||{}).value||'';
+  const box=el(boxId); if(!box) return;
+  for (const d of box.children)
+    d.style.display=(!q||d.textContent.toLowerCase().includes(q.toLowerCase()))?'':'none';
+}
+async function fetchLogs() {
+  try {
+    const data=await (await fetch('/api/logs?n=200')).json();
+    const lines=data.lines||[];
+    // Update all log boxes (quad panels + mobile)
+    const boxes=document.querySelectorAll('.log-box');
+    for (const box of boxes) {
+      const filterId=box.id.replace('-box','-filter');
+      const q=(el(filterId)||{}).value||'';
+      box.innerHTML='';
+      for (const line of lines) {
+        const d=document.createElement('div');
+        d.className='tlog '+_logLevel(line);
+        d.textContent=line;
+        if(q&&!line.toLowerCase().includes(q.toLowerCase())) d.style.display='none';
+        box.appendChild(d);
+      }
+      if(logAutoScroll) box.scrollTop=box.scrollHeight;
+    }
+  } catch(e){}
+}
+function startLogPolling() {
+  if (logPolling) return;
+  fetchLogs();
+  logPolling = setInterval(fetchLogs, 2000);
+}
+
+// ── SSE connection ────────────────────────────────────────────────────────────
+let evtSrc=null;
+function connect() {
+  if(evtSrc) evtSrc.close();
+  const cb=el('sb-conn');
+  cb.textContent='⚫ Connecting…'; cb.style.color=C.yellow;
+  evtSrc=new EventSource('/api/state');
+  evtSrc.onopen=()=>{ cb.textContent='🟢 Live'; cb.style.color=C.green; };
+  evtSrc.onmessage=e=>{
+    try { applyState(JSON.parse(e.data)); } catch(err){ console.error('SSE:',err); }
+  };
+  evtSrc.onerror=()=>{
+    cb.textContent='🔴 Reconnecting…'; cb.style.color=C.red;
+    evtSrc.close(); setTimeout(connect,3000);
+  };
+}
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+function onResize() {
+  for (let i=0; i<4; i++) {
+    if (quadTypes[i]==='lidar') resizeLidar(`q${i}-lidar-canvas`);
+  }
+  resizeLidar('mob-lidar-canvas');
+}
+window.addEventListener('resize', onResize);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+buildPresetButtons(PRESETS_DEFAULT);
+applyPreset('Race', PRESETS_DEFAULT);  // sets quadTypes + renders quads
+
+// Only start log polling if a log panel is actually visible at startup
+if (quadTypes.includes('logs')) startLogPolling();
+
+// Lazily set mobile camera src — only when actually in mobile layout
+if (window.innerWidth <= 700) {
+  const mi = el('mob-cam-img');
+  if (mi && !mi.src) mi.src = '/stream/front_left';
+}
+
+connect();
+
+// Natural camera frame size
+document.addEventListener('load', function(e){
+  if(e.target.classList&&e.target.classList.contains('cam-img')){
+    if(e.target.naturalWidth)  camNatW=e.target.naturalWidth;
+    if(e.target.naturalHeight) camNatH=e.target.naturalHeight;
+  }
+}, true);
+
+</script>
+</body>
+</html>"""
+
+
+# ── Flask app ─────────────────────────────────────────────────────────────────
+
+app       = Flask(__name__)
+_robot    = None
+_log_path = None
+
+
+@app.route('/')
+def index():
+    return Response(_HTML, mimetype='text/html')
+
+
+@app.route('/stream')
+def stream_default():
+    return _stream_gen('front_left')
+
+
+@app.route('/stream/<cam>')
+def stream_cam(cam):
+    if cam not in ('front_left', 'front_right', 'rear'):
+        return 'Not found', 404
+    return _stream_gen(cam)
+
+
+def _stream_gen(cam_name):
+    def _gen():
+        _robot.add_stream_client(cam_name)
+        try:
+            while True:
+                # Fast path: use pre-encoded JPEG from camera thread (encoded once, shared by all clients)
+                data = _robot.get_jpeg(cam_name)
+                if data is None:
+                    # Cache not yet warm — fall back to get_frame() + encode
+                    frame = _robot.get_frame(cam_name)
+                    if frame is not None and _jpeg_encode is not None:
+                        try:
+                            data = _jpeg_encode(frame)
+                        except (OSError, ValueError):
+                            data = None
+                if data:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
+                    time.sleep(0.1)   # 10 fps cap
+                else:
+                    time.sleep(0.5)   # camera absent — back off
+        finally:
+            _robot.remove_stream_client(cam_name)
+    return Response(
+        _gen(),
+        mimetype='multipart/x-mixed-replace; boundary=frame',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+@app.route('/api/state')
+def api_state():
+    def _gen():
+        while True:
+            try:
+                nav_bearing_err = None
+                if _robot._navigator is not None:
+                    nav_bearing_err = _robot._navigator.bearing_err
+                elif _robot._gps_navigator is not None:
+                    nav_bearing_err = _robot._gps_navigator.heading_err
+                data = _serialise(
+                    _robot.get_state(),
+                    cam_rotation    = _robot.get_cam_rotation(),
+                    aruco_enabled   = _robot.get_aruco_enabled(),
+                    aruco_state     = _robot.get_aruco_state(),
+                    nav_bearing_err = nav_bearing_err,
+                )
+                yield f"data: {json.dumps(data)}\n\n"
+            except Exception as exc:
+                yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+            time.sleep(0.1)
+    return Response(
+        _gen(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
+@app.route('/api/cmd', methods=['POST'])
+def api_cmd():
+    body = request.json or {}
+    cmd  = body.get('cmd', '')
+    cam  = body.get('cam', 'all')
+
+    if   cmd == 'estop':          _robot.estop()
+    elif cmd == 'reset':          _robot.reset_estop()
+    elif cmd == 'aruco_toggle':   _robot.toggle_aruco()
+    elif cmd == 'gps_bookmark':   _robot.bookmark_gps()
+    elif cmd == 'rotate_cw':
+        _robot.set_cam_rotation((_robot.get_cam_rotation() + 90) % 360)
+    elif cmd == 'rotate_ccw':
+        _robot.set_cam_rotation((_robot.get_cam_rotation() - 90 + 360) % 360)
+    elif cmd == 'record_toggle':
+        if _robot.is_cam_recording(cam):
+            _robot.stop_cam_recording(cam)
+        else:
+            _robot.start_cam_recording(cam)
+    elif cmd == 'record_stop':
+        _robot.stop_cam_recording(cam)
+    elif cmd == 'data_log_toggle':
+        if _robot.is_data_logging():
+            _robot.stop_data_log()
+        else:
+            _robot.start_data_log()
+    elif cmd == 'set_mode':
+        mode = body.get('mode', '')
+        if   mode == 'MANUAL': _robot.set_mode(RobotMode.MANUAL)
+        elif mode == 'AUTO':   _robot.set_mode(RobotMode.AUTO)
+        else: return jsonify({'ok': False, 'error': 'Unknown mode'}), 400
+    else:
+        return jsonify({'ok': False, 'error': f'Unknown command: {cmd}'}), 400
+    return jsonify({'ok': True})
+
+
+@app.route('/api/logs')
+def api_logs():
+    n = min(int(request.args.get('n', 200)), 500)
+    lines = []
+    if _log_path and os.path.exists(_log_path):
+        try:
+            with open(_log_path, 'r', errors='replace') as f:
+                lines = f.readlines()[-n:]
+        except OSError:
+            pass
+    return jsonify({'lines': [l.rstrip('\n') for l in lines]})
+
+
+# ── Config + entry point ──────────────────────────────────────────────────────
+
+def _load_config(path):
+    cfg = configparser.ConfigParser(inline_comment_prefixes=('#',))
+    cfg.read(path)
+    return cfg
+
+
+def main():
+    global _robot, _jpeg_encode, _log_path
+
+    DEFAULT_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini')
+
+    parser = argparse.ArgumentParser(description='HackyRacingRobot unified dashboard')
+    parser.add_argument('--config',         default=DEFAULT_CFG)
+    parser.add_argument('--host',           default=None)
+    parser.add_argument('--port',           default=None, type=int)
+    parser.add_argument('--debug',          action='store_true', default=None)
+    parser.add_argument('--yukon-port',     default=None)
+    parser.add_argument('--ibus-port',      default=None)
+    parser.add_argument('--gps-port',       default=None)
+    parser.add_argument('--lidar-port',     default=None)
+    parser.add_argument('--ntrip-host',     default=None)
+    parser.add_argument('--ntrip-port',     default=None, type=int, dest='ntrip_port_arg')
+    parser.add_argument('--ntrip-mount',    default=None)
+    parser.add_argument('--ntrip-user',     default=None)
+    parser.add_argument('--ntrip-password', default=None)
+    parser.add_argument('--rtcm-port',      default=None)
+    parser.add_argument('--rtcm-baud',      default=None, type=int)
+    parser.add_argument('--no-camera',      action='store_true', default=False)
+    parser.add_argument('--no-lidar',       action='store_true', default=False)
+    parser.add_argument('--no-gps',         action='store_true', default=False)
+    parser.add_argument('--no-motors',      action='store_true', default=False,
+                        help='Suppress all motor/LED commands (bench test mode)')
+    args = parser.parse_args()
+
+    _log_path = setup_logging()
+    log.info(f'Log: {_log_path}')
+    cfg = _load_config(args.config)
+
+    # Config: [dashboard] section, falls back to [web] for compatibility
+    def cfgd(key, fallback, cast=str):
+        v = _cfg(cfg, 'dashboard', key, None)
+        if v is None:
+            v = _cfg(cfg, 'web', key, fallback, cast)
+        else:
+            v = cast(v) if cast != str else v
+        return v
+
+    web_host  = args.host  or cfgd('host',  '0.0.0.0')
+    web_port  = args.port  or cfgd('port',  5000, int)
+    web_debug = args.debug or cfgd('debug', False, lambda x: x.lower()=='true')
+
+    _jpeg_encode = _make_jpeg_encoder()
+
+    bool_val = lambda x: x.lower() == 'true'
+    port_val = lambda x: None if x.lower() in ('auto', '') else x
+
+    def arg(cli_val, section, key, fallback, cast=str):
+        if cli_val is not None:
+            return cli_val
+        return _cfg(cfg, section, key, fallback, cast)
+
+    _robot = Robot(
+        yukon_port     = arg(args.yukon_port,     'robot', 'yukon_port',     None, port_val),
+        ibus_port      = arg(args.ibus_port,       'robot', 'ibus_port',      '/dev/ttyAMA3'),
+        lidar_port     = arg(args.lidar_port,      'lidar', 'port',           '/dev/ttyUSB0'),
+        gps_port       = arg(args.gps_port,        'gps',   'port',           '/dev/ttyUSB0'),
+        ntrip_host     = '' if _cfg(cfg,'ntrip','disabled',False,bool_val)
+                         else arg(args.ntrip_host, 'ntrip', 'host',           ''),
+        ntrip_port     = arg(args.ntrip_port_arg,  'ntrip', 'port',           2101, int),
+        ntrip_mount    = arg(args.ntrip_mount,      'ntrip', 'mount',          ''),
+        ntrip_user     = arg(args.ntrip_user,       'ntrip', 'user',           ''),
+        ntrip_password = arg(args.ntrip_password,   'ntrip', 'password',       ''),
+        rtcm_port      = '' if _cfg(cfg,'rtcm','disabled',False,bool_val)
+                         else arg(args.rtcm_port,  'rtcm',  'port',           ''),
+        rtcm_baud      = arg(args.rtcm_baud,        'rtcm',  'baud',           115200, int),
+        enable_camera  = not (args.no_camera or _cfg(cfg,'camera','disabled',False,bool_val)),
+        enable_lidar   = not (args.no_lidar  or _cfg(cfg,'lidar', 'disabled',False,bool_val)),
+        enable_gps     = not (args.no_gps    or _cfg(cfg,'gps',   'disabled',False,bool_val)),
+        cam_width      = _cfg(cfg, 'camera', 'width',       640,   int),
+        cam_height     = _cfg(cfg, 'camera', 'height',      480,   int),
+        cam_fps        = _cfg(cfg, 'camera', 'fps',         30,    int),
+        cam_rotation   = _cfg(cfg, 'camera', 'rotation',    0,     int),
+        enable_aruco   = _cfg(cfg, 'aruco',  'enabled',     False, bool_val),
+        aruco_dict     = _cfg(cfg, 'aruco',  'dict',        'DICT_4X4_1000'),
+        aruco_calib    = _cfg(cfg, 'aruco',  'calib_file',  ''),
+        aruco_tag_size = _cfg(cfg, 'aruco',  'tag_size',    0.15,  float),
+        throttle_ch    = _cfg(cfg, 'rc',     'throttle_ch', 3,     int),
+        steer_ch       = _cfg(cfg, 'rc',     'steer_ch',    1,     int),
+        mode_ch        = _cfg(cfg, 'rc',     'mode_ch',     5,     int),
+        speed_ch       = _cfg(cfg, 'rc',     'speed_ch',    6,     int),
+        auto_type_ch   = _cfg(cfg, 'rc',     'auto_type_ch',7,     int),
+        gps_log_ch     = _cfg(cfg, 'rc',     'gps_log_ch',  8,     int),
+        gps_bookmark_ch= _cfg(cfg, 'rc',     'gps_bookmark_ch',2,  int),
+        gps_log_dir    = _cfg(cfg, 'gps',    'log_dir',     ''),
+        gps_log_hz     = _cfg(cfg, 'gps',    'log_hz',      5.0,   float),
+        deadzone       = _cfg(cfg, 'rc',     'deadzone',    30,    int),
+        failsafe_s     = _cfg(cfg, 'rc',     'failsafe_s',  0.5,   float),
+        speed_min      = _cfg(cfg, 'rc',     'speed_min',   0.25,  float),
+        control_hz     = _cfg(cfg, 'rc',     'control_hz',  50,    int),
+        no_motors      = args.no_motors,
+        rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),
+        max_recording_minutes = _cfg(cfg, 'output', 'max_recording_minutes', 0.0, float),
+        data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
+    )
+    _robot.start()
+    log.info(f'Dashboard → http://{_local_ip()}:{web_port}/')
+
+    try:
+        app.run(host=web_host, port=web_port,
+                debug=web_debug, threaded=True, use_reloader=False)
+    finally:
+        _robot.stop()
+
+
+if __name__ == '__main__':
+    main()

@@ -135,6 +135,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False,
             'left_fault':  t.left_fault,
             'right_fault': t.right_fault,
             'heading':     round(t.heading, 1) if t.heading is not None else None,
+            'pitch':       round(t.pitch,   1) if t.pitch   is not None else None,
+            'roll':        round(t.roll,    1) if t.roll    is not None else None,
         },
         'gps': {
             'latitude':         g.latitude,
@@ -686,6 +688,14 @@ html, body {
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-title">IMU Attitude</div>
+      <div class="stat-grid">
+        <div class="stat-item"><div class="lbl">Pitch</div><div class="val" id="t-pitch" style="color:var(--gray)">---</div></div>
+        <div class="stat-item"><div class="lbl">Roll</div> <div class="val" id="t-roll"  style="color:var(--gray)">---</div></div>
+      </div>
+    </div>
+
   </div><!-- /page-telem -->
 
   <!-- GPS -->
@@ -1122,7 +1132,7 @@ function applyState(s) {
   fEl.textContent = (t.left_fault ? 'FAULT-L ' : '') + (t.right_fault ? 'FAULT-R' : '') || 'OK';
   fEl.style.color = faulted ? C.red : C.green;
 
-  // IMU heading
+  // IMU heading / pitch / roll
   const hdgVal = el('hdg-val'), hdgSub = el('hdg-sub');
   if (t.heading != null) {
     hdgVal.textContent = t.heading.toFixed(1) + '°'; hdgVal.style.color = C.cyan;
@@ -1134,6 +1144,12 @@ function applyState(s) {
     hdgSub.textContent = 'No IMU'; hdgSub.style.color = C.gray;
     el('compass-canvas').style.opacity = '0.25';
   }
+  const pitEl = el('t-pitch');
+  pitEl.textContent = t.pitch != null ? (t.pitch >= 0 ? '+' : '') + t.pitch.toFixed(1) + '°' : '---';
+  pitEl.style.color = t.pitch != null ? C.cyan : C.gray;
+  const rolEl = el('t-roll');
+  rolEl.textContent = t.roll  != null ? (t.roll  >= 0 ? '+' : '') + t.roll.toFixed(1)  + '°' : '---';
+  rolEl.style.color = t.roll  != null ? C.cyan : C.gray;
   fEl.textContent = (t.left_fault ? 'FAULT-L ' : '') + (t.right_fault ? 'FAULT-R' : '') || 'OK';
   fEl.style.color = faulted ? C.red : C.green;
 

@@ -71,9 +71,8 @@ The `Robot` class is the **sole backend**. All three frontends (GUI, web, mobile
 | `camera` | 30 Hz (cfg) | Capture + optional ArUco detection |
 | `ld06` | event-driven | LD06 packet → LidarScan |
 | `gps` | NMEA events | NMEA parsing + RTCM/NTRIP injection |
-| `rc_reader` | ~143 Hz | iBUS channel reader |
 | `telemetry` | 1 Hz | Poll Yukon voltage/temp/IMU |
-| `control` | 50 Hz | RC→motor or navigator→motor |
+| `control` | 50 Hz | Query RC via CMD_RC_QUERY (10 Hz), send CMD_MODE heartbeat, run navigator→motor in AUTO |
 | `system` | 1 Hz | CPU/mem/disk metrics |
 
 **Thread safety rules:**
@@ -144,7 +143,7 @@ Key sections:
 
 | Section | What it controls |
 |---------|-----------------|
-| `[robot]` | Yukon port, iBUS port |
+| `[robot]` | Yukon port, iBUS port (iBUS port only used by `rc_drive.py`) |
 | `[rc]` | Channel map, deadzone, failsafe, 50 Hz control rate |
 | `[camera]` | Resolution, fps, rotation |
 | `[aruco]` | Dictionary, calibration file, tag size |
@@ -176,7 +175,7 @@ value = _cfg(cfg, 'section', 'key', fallback, cast=int)
 | Device | Interface | Path | Notes |
 |--------|-----------|------|-------|
 | Yukon RP2040 | USB serial | `/dev/ttyACM0` | 115200 baud; 5-byte protocol |
-| FlySky iBUS RX | UART3 RX (GPIO 9) | `/dev/ttyAMA3` | 115200 baud; 143 Hz |
+| FlySky iBUS RX | Yukon GP26 (PIO UART) | — | 115200 baud; decoded by Yukon firmware; queried by Pi via CMD_RC_QUERY |
 | LD06 LiDAR | UART0 RX (GPIO 15) | `/dev/ttyAMA0` | 230400 baud; GPIO 18 PWM @ 30 kHz |
 | TAU1308 GNSS | USB serial | `/dev/ttyUSB0` | 115200 baud; NMEA output |
 | IMX296 camera | CSI / picamera2 | — | Fallback to `/dev/video0` via OpenCV |

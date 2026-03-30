@@ -348,8 +348,11 @@ def run_gui(yukon_path, no_terminal=False):
             led_a        = _sim._state['led_a']
             led_b        = _sim._state['led_b']
             cmds         = _sim._state['cmds_rx']
+            rc_mode      = _sim._state['rc_mode']
             imu_present  = _sim._state['imu_present']
             imu_heading  = _sim._state['imu_heading']
+            imu_pitch    = _sim._state['imu_pitch']
+            imu_roll     = _sim._state['imu_roll']
             bearing_tgt  = _sim._state['bearing_target']
             strip_pixels = list(_sim._state['strip_pixels'])
             strip_pat    = _sim._state['strip_pattern']
@@ -412,14 +415,23 @@ def run_gui(yukon_path, no_terminal=False):
         _label(screen, f"Cmds rx: {cmds}", mid_panel.x + 12, mid_panel.bottom - 22, C_GRAY)
 
         # Status panel
-        stat_panel = pygame.Rect(370, 352, 240, 130)
+        stat_panel = pygame.Rect(370, 352, 240, 203)
         _panel(screen, stat_panel, "Sim Values")
-        _label(screen, f"Voltage : {volt_slider.value:.1f} V",  stat_panel.x+12, stat_panel.y+26, C_YELLOW)
-        _label(screen, f"Current : {curr_slider.value:.2f} A",  stat_panel.x+12, stat_panel.y+50, C_ORANGE)
+        mode_name = _sim.RC_MODE_NAMES.get(rc_mode, str(rc_mode))
+        mode_col  = {_sim.RC_MANUAL: C_CYAN, _sim.RC_AUTO: C_GREEN,
+                     _sim.RC_ESTOP: C_RED}.get(rc_mode, C_GRAY)
+        imu_col   = C_GRAY if not imu_present else C_WHITE
+        _label(screen, f"Mode    : {mode_name}",              stat_panel.x+12, stat_panel.y+26, mode_col)
+        _label(screen, f"Voltage : {volt_slider.value:.1f} V",  stat_panel.x+12, stat_panel.y+50, C_YELLOW)
+        _label(screen, f"Current : {curr_slider.value:.2f} A",  stat_panel.x+12, stat_panel.y+74, C_ORANGE)
         fl_col = C_RED   if fault_left  else C_GRAY
         fr_col = C_RED   if fault_right else C_GRAY
-        _label(screen, f"Fault L : {'YES' if fault_left  else 'no'}", stat_panel.x+12, stat_panel.y+74,  fl_col)
-        _label(screen, f"Fault R : {'YES' if fault_right else 'no'}", stat_panel.x+12, stat_panel.y+98,  fr_col)
+        _label(screen, f"Fault L : {'YES' if fault_left  else 'no'}", stat_panel.x+12, stat_panel.y+98,  fl_col)
+        _label(screen, f"Fault R : {'YES' if fault_right else 'no'}", stat_panel.x+12, stat_panel.y+122, fr_col)
+        _label(screen, f"Pitch   : {imu_pitch:+.1f}°" if imu_present else "Pitch   : ---",
+               stat_panel.x+12, stat_panel.y+146, imu_col)
+        _label(screen, f"Roll    : {imu_roll:+.1f}°"  if imu_present else "Roll    : ---",
+               stat_panel.x+12, stat_panel.y+170, imu_col)
 
         # ── Bottom: LED strip ─────────────────────────────────────────────────
         strip_panel = pygame.Rect(10, 492, W - 20, 95)

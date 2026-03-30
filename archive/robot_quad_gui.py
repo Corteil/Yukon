@@ -829,6 +829,8 @@ def run_quad_gui(robot: Robot, cfg, fps: int = 10, log_path: str = ''):
     # Reusable rects for top bar button hit-testing
     topbar_estop_rect = pygame.Rect(0, 0, 0, 0)
     topbar_reset_rect = pygame.Rect(0, 0, 0, 0)
+    # Per-quad REC button rects — updated each frame, hit-tested in MOUSEBUTTONDOWN
+    quad_rec_rects = [pygame.Rect(0, 0, 0, 0)] * 4
 
     tick = 0
 
@@ -955,13 +957,53 @@ def run_quad_gui(robot: Robot, cfg, fps: int = 10, log_path: str = ''):
                     _handle_button(hit[0])
                     continue
 
+                # Per-quad REC buttons
+                _rec_hit = False
+                for qi, rb in enumerate(quad_rec_rects):
+                    if rb.width > 0 and rb.collidepoint(pos):
+                        ptype = quad_panels[qi]
+                        if ptype == 'front_left':
+                            if state.cam_front_left_recording:
+                                robot.stop_cam_recording('front_left')
+                            else:
+                                robot.start_cam_recording('front_left')
+                        elif ptype == 'front_right':
+                            if state.cam_front_right_recording:
+                                robot.stop_cam_recording('front_right')
+                            else:
+                                robot.start_cam_recording('front_right')
+                        elif ptype == 'rear':
+                            if state.cam_rear_recording:
+                                robot.stop_cam_recording('rear')
+                            else:
+                                robot.start_cam_recording('rear')
+                        _rec_hit = True
+                        break
+                if _rec_hit:
+                    continue
+
                 # Quad taps
                 if show_hints:
                     show_hints = False
                     continue
                 if strip_mode == 'select' and not strip_rect.collidepoint(pos):
-                    selected_quad = None
-                    _set_strip_mode('normal')
+                    # Check for double-tap before cancelling — a quick second tap
+                    # on the same quad should expand it, not just deselect.
+                    rects = _quad_rects()
+                    dbl_handled = False
+                    for qi, qr in enumerate(rects):
+                        if qr.width > 0 and qr.collidepoint(pos):
+                            now = time.monotonic()
+                            if (last_tap_quad == qi and
+                                    (now - last_tap_time) * 1000 < dbl_tap_ms):
+                                last_tap_quad = qi
+                                last_tap_time = now
+                                _handle_quad_tap(qi, double_tap=True)
+                                dbl_handled = True
+                            break
+                    if not dbl_handled:
+                        selected_quad = None
+                        _set_strip_mode('normal')
                     continue
 
                 rects = _quad_rects()
@@ -1060,8 +1102,7 @@ def run_quad_gui(robot: Robot, cfg, fps: int = 10, log_path: str = ''):
                 rlbl = '■ STOP' if rec else '● REC'
                 _text(screen, fonts['tiny'], rlbl, rb.centerx, rb.centery,
                       C_WHITE, 'center')
-                # Store rect for mouse hit-testing per-quad
-                # (handled in MOUSEBUTTONDOWN block above via quad tap → then REC)
+                quad_rec_rects[qi] = rb
 
             elif ptype == 'lidar':
                 _render_lidar(screen, inner, state.lidar if state.lidar_ok else None, fonts)
@@ -1072,7 +1113,7 @@ def run_quad_gui(robot: Robot, cfg, fps: int = 10, log_path: str = ''):
                 _text(screen, fonts['sm'], 'GPS SKY',
                       inner.x + 8, inner.y + 6, C_GRAY)
                 _render_gps_sky(screen, inner.inflate(0, -24).move(0, 24),
-                                state.gps if state.gps_ok else None, fonts)
+                                state.gps, fonts)
 
             elif ptype == 'gps_track':
                 _text(screen, fonts['sm'], 'GPS TRACK',
@@ -1229,6 +1270,8 @@ def main():
 
     try:
         run_quad_gui(robot, cfg=cfg, fps=fps, log_path=log_path)
+    except KeyboardInterrupt:
+        pass
     finally:
         robot.stop()
         pygame.quit()

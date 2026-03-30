@@ -17,7 +17,7 @@ flag is omitted.
 |------|---------|-------------|
 | `--config PATH` | `robot.ini` | Config file |
 | `--yukon-port PORT` | from config | Yukon USB serial port |
-| `--ibus-port PORT` | from config | iBUS UART device |
+| `--ibus-port PORT` | from config | iBUS UART device (**deprecated** — RC input is now handled by Yukon GP26; only used by `rc_drive.py`) |
 | `--gps-port PORT` | from config | GPS serial port |
 | `--lidar-port PORT` | from config | LiDAR serial port |
 | `--ntrip-host HOST` | from config | NTRIP caster hostname |
@@ -49,9 +49,8 @@ Subsystem threads:
 | `ld06` | packet-driven | Parse LD06 LiDAR packets, update latest scan |
 | `gps` | NMEA rate | Parse NMEA sentences, inject RTCM corrections |
 | `gps_log` | 5 Hz (configurable) | Write GPS CSV log when enabled |
-| `rc_reader` | ~143 Hz | Read iBUS packets, update RC channel state |
 | `telemetry` | 1 Hz | Request sensor data from Yukon, update `Telemetry` |
-| `control` | 50 Hz (configurable) | Compute motor speeds from RC / navigator, send to Yukon |
+| `control` | 50 Hz (configurable) | Query RC channels via CMD_RC_QUERY (10 Hz), send CMD_MODE heartbeat, compute motor speeds from navigator in AUTO, send to Yukon |
 | `system` | 1 Hz | Poll CPU / mem / disk via psutil |
 
 Key public API:
@@ -114,7 +113,7 @@ Each record contains a complete snapshot of all sensor inputs and motor outputs:
 | `mode`, `auto_type`, `speed_scale` | Robot operating state |
 | `rc_channels` | All 14 raw RC µs values |
 | `drive` | `left` / `right` motor outputs — the training labels |
-| `telemetry` | Voltage, current, temperatures, IMU heading, fault flags |
+| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags |
 | `gps` | Lat, lon, alt, speed, fix quality, satellites, HDOP, h_error |
 | `lidar` | Full angle and distance arrays |
 | `aruco` | All detected tags and gates with bearings and distances |
@@ -159,7 +158,7 @@ at the configured GUI fps (default 10 Hz).
 | Panel | Contents |
 |-------|----------|
 | Drive | Left / right motor speed bars, throttle, steer, speed scale, RC status |
-| Telemetry | Voltage, current, board + motor temperatures, fault indicators, IMU heading |
+| Telemetry | Voltage, current, board + motor temperatures, fault indicators, IMU heading / pitch / roll |
 | GPS | Fix quality, position, horizontal error, HDOP, satellites |
 | Camera | Live frame with optional ArUco / bearing overlay and IMU compass arc |
 | LiDAR | Polar distance scan (distance-coloured points, range rings) |
@@ -249,7 +248,7 @@ Mobile-optimised Flask dashboard (port 5001).  Same `Robot` backend as
 | Tab | Contents |
 |-----|----------|
 | Drive | Camera stream (with flashing REC dot), bearing overlay, motor bars, mode / speed, ArUco, recording and DLOG buttons |
-| Telem | Voltage, current, temperatures, IMU heading compass, faults |
+| Telem | Voltage, current, temperatures, IMU heading / pitch / roll compass, faults |
 | GPS | Fix quality, position, horizontal error, satellites, bookmark button |
 | System | CPU, temperature, memory, disk, LiDAR polar plot |
 | Logs | Live log viewer — colour-coded by level, filter bar, auto-scroll |
@@ -431,8 +430,7 @@ with IBusReader('/dev/ttyAMA3') as ibus:
     channels = ibus.read()   # blocking; returns list[int] or None on timeout
 ```
 
-Hardware: GPIO 9 (RX only) → `/dev/ttyAMA3` via `uart3-pi5` device tree overlay.
-See `docs/SETUP.md` for overlay configuration.
+> **Note:** `drivers/ibus.py` is used by `rc_drive.py` only. The main robot stack (`robot_daemon.py` and all frontends) no longer reads iBUS directly — RC input is handled by the Yukon RP2040 via GP26 PIO UART and queried over USB serial with `CMD_RC_QUERY`. The `uart3-pi5` device tree overlay is not required for the main stack.
 
 ---
 
@@ -540,7 +538,7 @@ comment in the file.  Key sections:
 
 | Section | Controls |
 |---------|----------|
-| `[robot]` | Yukon serial port, iBUS port |
+| `[robot]` | Yukon serial port, iBUS port (iBUS port only used by `rc_drive.py`) |
 | `[rc]` | Channel mapping, deadzone, failsafe, control rate |
 | `[camera]` | Resolution, fps, rotation |
 | `[aruco]` | Detection dict, calibration file template, tag size |
