@@ -358,7 +358,7 @@ button:active{background:#2a2a42}
   <div id="sb-presets"></div>
   <div id="sb-btns">
     <button class="btn-estop" onclick="sendCmd('estop')">ESTOP</button>
-    <button class="btn-reset" onclick="sendCmd('reset')">Reset</button>
+    <button class="btn-reset" id="btn-reset" onclick="sendCmd('reset')" style="display:none">Reset ESTOP</button>
     <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
     <button onclick="sendCmd('record_toggle')" id="btn-rec" title="Toggle recording">⏺ REC</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
@@ -1013,6 +1013,17 @@ function updateStatusBar(s) {
   const bd=el('btn-dlog');
   if(bd){ bd.style.color=s.data_logging?C.purple:C.gray;
           bd.style.borderColor=s.data_logging?C.purple:C.border; }
+
+  const bReset=el('btn-reset');
+  if(bReset){
+    if(s.mode==='ESTOP'){
+      bReset.style.display='';
+      bReset.style.animation='blink .5s step-end infinite';
+    } else {
+      bReset.style.display='none';
+      bReset.style.animation='';
+    }
+  }
 }
 
 // ── Mode toggle ───────────────────────────────────────────────────────────────

@@ -20,7 +20,8 @@ Raspberry Pi 5 — 40-pin header
 | 21   | 40  | I2S TX (DIN)          | Out       | Audio data to DAC/ADC                      |
 | 22   | 15  | Status LED — ESTOP    | Out       | Red; active high                           |
 | 23   | 16  | Status LED — AUTO     | Out       | Green; active high                         |
-| 24   | 18  | Status LED — MANUAL   | Out       | Blue or amber; active high                 |
+| 24   | 18  | Camera stereo sync    | Out       | Pulse to XVS pins on both IMX296 modules   |
+| 25   | 22  | Status LED — MANUAL   | Out       | Blue or amber; active high                 |
 | 27   | 13  | Start/stop button     | In        | Pull-up, active low                        |
 
 ---
@@ -55,7 +56,7 @@ dtoverlay=hifiberry-dac          # replace with your actual audio overlay
 
 ## Free GPIO (available for future expansion)
 
-5, 7, 8, 9, 10, 11, 16, 25, 26
+5, 7, 8, 9, 10, 11, 16, 26
 
 ---
 

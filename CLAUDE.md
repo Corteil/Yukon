@@ -149,6 +149,7 @@ Key sections:
 | `[aruco]` | Dictionary, calibration file, tag size |
 | `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |
 | `[leds]` | LED preset per mode (manual/auto/estop) |
+| `[gpio]` | Physical buttons (GPIO 17/27) and status LEDs (GPIO 22/23/25) |
 | `[lidar]` | LD06 port |
 | `[gps]` | TAU1308 port, log dir, log rate |
 | `[ntrip]` | NTRIP caster host/port/mount/credentials |
@@ -176,7 +177,7 @@ value = _cfg(cfg, 'section', 'key', fallback, cast=int)
 |--------|-----------|------|-------|
 | Yukon RP2040 | USB serial | `/dev/ttyACM0` | 115200 baud; 5-byte protocol |
 | FlySky iBUS RX | Yukon GP26 (PIO UART) | — | 115200 baud; decoded by Yukon firmware; queried by Pi via CMD_RC_QUERY |
-| LD06 LiDAR | UART0 RX (GPIO 15) | `/dev/ttyAMA0` | 230400 baud; GPIO 18 PWM @ 30 kHz |
+| LD06 LiDAR | UART0 RX (GPIO 15) | `/dev/ttyAMA0` | 230400 baud; GPIO 12 PWM @ 30 kHz |
 | TAU1308 GNSS | USB serial | `/dev/ttyUSB0` | 115200 baud; NMEA output |
 | IMX296 camera | CSI / picamera2 | — | Fallback to `/dev/video0` via OpenCV |
 | BNO085 IMU | I2C on Yukon | — | Optional; heading via CMD_SENSOR response |

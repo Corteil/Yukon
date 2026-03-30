@@ -1504,6 +1504,117 @@ def _tank_mix(throttle_raw: int, steer_raw: int, deadzone: int):
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# GPIO buttons and status LEDs (optional — requires lgpio on Pi 5)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _GpioButtons:
+    """
+    Physical button inputs and status LED outputs via lgpio (Pi 5).
+
+    Pins (BCM, from docs/GPIO.md):
+      GPIO 17 — ESTOP reset button  (active low, internal pull-up)
+      GPIO 27 — Start/stop button   (active low, internal pull-up)
+      GPIO 22 — Status LED: ESTOP   (active high, red)
+      GPIO 23 — Status LED: AUTO    (active high, green)
+      GPIO 25 — Status LED: MANUAL  (active high, blue/amber)
+
+    All values are read from robot.ini [gpio] section so wiring can be changed
+    without editing source code.
+    """
+
+    def __init__(self, ini: configparser.ConfigParser):
+        self._enabled       = ini.getboolean('gpio', 'enabled', fallback=False)
+        self._pin_estop_btn = ini.getint('gpio', 'estop_btn_gpio', fallback=17)
+        self._pin_start_btn = ini.getint('gpio', 'start_btn_gpio', fallback=27)
+        self._pin_led_estop = ini.getint('gpio', 'led_estop_gpio', fallback=22)
+        self._pin_led_auto  = ini.getint('gpio', 'led_auto_gpio',  fallback=23)
+        self._pin_led_manual= ini.getint('gpio', 'led_manual_gpio',fallback=25)
+        self._h   = None   # lgpio chip handle
+        self._cbs = []     # callback handles (must be kept alive)
+        self._robot = None
+
+    def start(self, robot: 'Robot') -> bool:
+        """Open GPIO chip, configure pins, register button callbacks.
+        Returns True on success, False if lgpio is unavailable or disabled.
+        """
+        if not self._enabled:
+            return False
+        self._robot = robot
+        try:
+            import lgpio as _lgpio
+            self._lgpio = _lgpio
+            self._h = _lgpio.gpiochip_open(0)
+            # Button inputs — active low with internal pull-up
+            for pin in (self._pin_estop_btn, self._pin_start_btn):
+                _lgpio.gpio_claim_input(self._h, pin, _lgpio.SET_PULL_UP)
+            # Status LED outputs — start all off
+            for pin in (self._pin_led_estop, self._pin_led_auto, self._pin_led_manual):
+                _lgpio.gpio_claim_output(self._h, pin, 0)
+            # Button callbacks: falling edge = button pressed (active low)
+            self._cbs.append(
+                _lgpio.callback(self._h, self._pin_estop_btn,
+                                _lgpio.FALLING_EDGE, self._on_estop_btn))
+            self._cbs.append(
+                _lgpio.callback(self._h, self._pin_start_btn,
+                                _lgpio.FALLING_EDGE, self._on_start_btn))
+            log.info("GPIO buttons/LEDs ready (ESTOP=%d, START=%d, LEDs=%d/%d/%d)",
+                     self._pin_estop_btn, self._pin_start_btn,
+                     self._pin_led_estop, self._pin_led_auto, self._pin_led_manual)
+            return True
+        except Exception as e:
+            log.warning("GPIO init failed (%s) — physical buttons disabled", e)
+            self._h = None
+            return False
+
+    def stop(self):
+        if self._h is None:
+            return
+        try:
+            for cb in self._cbs:
+                cb.cancel()
+            self._cbs.clear()
+            lg = self._lgpio
+            for pin in (self._pin_led_estop, self._pin_led_auto, self._pin_led_manual):
+                lg.gpio_write(self._h, pin, 0)
+            lg.gpiochip_close(self._h)
+        except Exception as e:
+            log.debug("GPIO close error: %s", e)
+        self._h = None
+
+    def update_leds(self, mode: RobotMode):
+        """Drive the three status LEDs to reflect *mode*. Call from control thread."""
+        if self._h is None:
+            return
+        try:
+            lg = self._lgpio
+            lg.gpio_write(self._h, self._pin_led_estop,  1 if mode is RobotMode.ESTOP  else 0)
+            lg.gpio_write(self._h, self._pin_led_auto,   1 if mode is RobotMode.AUTO   else 0)
+            lg.gpio_write(self._h, self._pin_led_manual, 1 if mode is RobotMode.MANUAL else 0)
+        except Exception as e:
+            log.debug("GPIO LED write error: %s", e)
+
+    # ── button callbacks (run in lgpio's callback thread) ────────────────────
+
+    def _on_estop_btn(self, chip, gpio, level, tick):
+        """GPIO 17 falling edge → clear ESTOP."""
+        if self._robot:
+            log.info("Physical ESTOP-reset button pressed")
+            self._robot.reset_estop()
+
+    def _on_start_btn(self, chip, gpio, level, tick):
+        """GPIO 27 falling edge → toggle MANUAL ↔ AUTO."""
+        if self._robot is None:
+            return
+        with self._robot._mode_lock:
+            mode = self._robot._mode
+        if mode is RobotMode.ESTOP:
+            return   # start button has no effect during ESTOP
+        new_mode = RobotMode.MANUAL if mode is RobotMode.AUTO else RobotMode.AUTO
+        log.info("Physical start/stop button → %s", new_mode.name)
+        self._robot.set_mode(new_mode)
+
+
 class Robot:
     """
     Top-level robot controller.
@@ -1632,6 +1743,7 @@ class Robot:
         self._led_rc_lost     = _ini.get('leds', 'rc_lost',     fallback='rc_lost').strip()
         self._led_motor_fault = _ini.get('leds', 'motor_fault', fallback='motor_fault').strip()
         self._fault_rotation_s = float(_ini.get('leds', 'fault_rotation_s', fallback='2.0'))
+        self._gpio_buttons    = _GpioButtons(_ini)
 
         # Subsystems (created in start())
         self._yukon:            Optional[_YukonLink] = None
@@ -1790,6 +1902,7 @@ class Robot:
             self._gps.start()
 
         self._system.start()
+        self._gpio_buttons.start(self)
 
         # RC input is now handled on the Yukon (GP26 PIO UART). The control thread
         # queries channels via CMD_RC_QUERY and sends CMD_MODE as a heartbeat.
@@ -1805,6 +1918,7 @@ class Robot:
         self._data_logger.stop()
         if self._yukon:
             self._yukon.close()
+        self._gpio_buttons.stop()
         for sub in (self._cam_front_left, self._cam_front_right, self._cam_rear,
                     self._camera, self._lidar, self._gps, self._system):
             if sub:
@@ -2261,6 +2375,7 @@ class Robot:
                     # LED A: on = AUTO, off = MANUAL/ESTOP
                     if mode is not last_mode:
                         yukon.set_led_a(mode is RobotMode.AUTO)
+                        self._gpio_buttons.update_leds(mode)
                         last_mode = mode
 
                     # ── LED strip: rotate through all active faults ───────────
@@ -2529,7 +2644,7 @@ class Robot:
 # Logging setup (used by robot_gui.py, robot_web.py, robot_mobile.py)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def setup_logging(log_dir: str = None) -> str:
+def setup_logging(log_dir: str = None, level=None) -> str:
     """
     Configure root logger with a console handler and a rotating file handler.
 
@@ -2537,6 +2652,8 @@ def setup_logging(log_dir: str = None) -> str:
     ----------
     log_dir : directory for the log file.  Defaults to ``logs/`` next to
               this file.  Created automatically if it does not exist.
+    level   : logging level (int or string, e.g. logging.DEBUG or "DEBUG").
+              Defaults to INFO.
 
     Returns the absolute path of the log file.
     """
@@ -2550,8 +2667,13 @@ def setup_logging(log_dir: str = None) -> str:
     fmt_file    = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
     fmt_console = logging.Formatter('%(levelname)s %(name)s: %(message)s')
 
+    if level is None:
+        level = logging.INFO
+    elif isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(level)
 
     # Console
     sh = logging.StreamHandler()
