@@ -15,6 +15,73 @@
 
 ---
 
+## User group membership
+
+The robot process (and your login session) need access to serial ports and GPIO
+without `sudo`. Add your user to the required groups once:
+
+```bash
+sudo usermod -aG dialout,gpio pi
+```
+
+Log out and back in (or reboot) for the change to take effect. Verify with:
+
+```bash
+groups
+# should include: dialout gpio
+```
+
+`dialout` covers `/dev/ttyACM0` (Yukon), `/dev/ttyUSB0` (GPS), and
+`/dev/ttyAMA0` (LiDAR). `gpio` covers the PWM sysfs node (see LiDAR PWM
+section below).
+
+---
+
+## Disable the serial console on `/dev/ttyAMA0`
+
+By default Raspberry Pi OS assigns a login shell to `/dev/ttyAMA0`. This
+**must** be removed before the LD06 LiDAR can use that port.
+
+```bash
+sudo raspi-config
+```
+
+Navigate to: **Interface Options → Serial Port**
+
+- "Would you like a login shell to be accessible over the serial port?" → **No**
+- "Would you like the serial port hardware to be enabled?" → **Yes**
+
+Finish and reboot. Confirm the console is gone:
+
+```bash
+ls -la /dev/ttyAMA0           # device should exist
+sudo systemctl status serial-getty@ttyAMA0.service   # should be inactive/disabled
+```
+
+---
+
+## System packages (apt)
+
+Install these before running `pip install -r requirements.txt`:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    python3-picamera2 \
+    python3-lgpio \
+    python3-rpi.gpio \
+    python3-numpy
+```
+
+| Package | Used by |
+|---------|---------|
+| `python3-picamera2` | Camera capture (IMX296); must be installed via apt, not pip |
+| `python3-lgpio` | GPIO buttons (ESTOP/start) and status LEDs on Pi 5 |
+| `python3-rpi.gpio` | Stereo camera hardware sync pulse (GPIO 24); optional |
+| `python3-numpy` | Required by OpenCV and picamera2; apt version avoids build issues |
+
+---
+
 ## Device tree overlays
 
 Add the following lines to `/boot/firmware/config.txt`:
@@ -58,7 +125,7 @@ Reload rules: `sudo udevadm control --reload-rules`
 ## Python dependencies
 
 ```bash
-pip install pyserial picamera2 pygame opencv-python-headless flask pillow psutil
+pip install -r requirements.txt
 ```
 
 | Package | Used by |
@@ -70,6 +137,22 @@ pip install pyserial picamera2 pygame opencv-python-headless flask pillow psutil
 | `flask` | `robot_web.py`, `robot_mobile.py`, `camera_web.py` |
 | `pillow` | `tools/generate_aruco_tags.py`, `tools/make_checkerboard_pdf.py` |
 | `psutil` | System stats (CPU, memory, disk) |
+
+---
+
+## Create required directories
+
+The daemon writes logs and recordings to fixed paths that must exist before
+first run:
+
+```bash
+mkdir -p ~/Code/HackyRacingRobot/logs
+mkdir -p ~/Pictures/HackyRacingRobot
+mkdir -p ~/Videos/HackyRacingRobot
+mkdir -p ~/Documents/HackyRacingRobot
+```
+
+Adjust the repo path if your clone is elsewhere.
 
 ---
 
