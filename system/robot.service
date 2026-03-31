@@ -1,0 +1,38 @@
+[Unit]
+Description=HackyRacingRobot web dashboard
+Documentation=https://github.com/corteil/hackyracingrobot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+WorkingDirectory=/home/pi/Code/HackyRacingRobot
+
+# Use the web dashboard as the autostart frontend.
+# Only one frontend may run at a time — do NOT enable robot_mobile or
+# robot_gui alongside this service (they claim the same serial ports).
+ExecStart=/usr/bin/python3 /home/pi/Code/HackyRacingRobot/robot_web.py
+
+# Give serial/GPIO devices time to appear after boot
+ExecStartPre=/bin/sleep 5
+
+Restart=on-failure
+RestartSec=10
+
+# Soft resource limits — raise if camera or LiDAR threads are starved
+LimitNOFILE=65536
+
+# Environment — extend PATH so picamera2 system packages are found
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Journal output (also written to logs/robot.log by the daemon itself)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=robot
+
+[Install]
+WantedBy=multi-user.target
