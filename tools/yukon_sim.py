@@ -5,12 +5,15 @@ yukon_sim.py — Yukon USB serial simulator
 Creates a virtual serial port (PTY) that emulates the Yukon (/dev/ttyACM0):
   - Parses 5-byte CMD packets and responds with ACK/NAK
   - Returns simulated sensor data for CMD_SENSOR
+  - Optionally reads iBUS packets from ibus_sim (or a real receiver) to
+    populate rc_channels so CMD_RC_QUERY returns live stick values.
 
 Any client that speaks the Yukon serial protocol can connect to the PTY port
 (rc_drive.py, robot.py, test_main.py, etc.).
 
 Usage:
     python3 yukon_sim.py
+    python3 yukon_sim.py --ibus-port /dev/pts/3   # pipe ibus_sim into rc_channels
 """
 
 import os
@@ -24,6 +27,9 @@ import time
 import select
 import argparse
 import random
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT      = os.path.dirname(_TOOLS_DIR)
 
 # ---------------------------------------------------------------------------
 # Protocol constants
@@ -105,6 +111,7 @@ _lock  = threading.Lock()
 _state = {
     'left_byte'      : None,    # last CMD_LEFT  byte received
     'right_byte'     : None,    # last CMD_RIGHT byte received
+    'ibus_port'      : None,    # set by start_ibus_reader()
     'led_a'          : False,
     'led_b'          : False,
     'cmds_rx'        : 0,       # total Yukon commands received
@@ -309,6 +316,89 @@ def _tick_strip():
 
 
 # ---------------------------------------------------------------------------
+# MANUAL mode motor simulation (mirrors Yukon firmware iBUS tank-mix)
+# ---------------------------------------------------------------------------
+
+def _tick_manual_drive():
+    """When rc_mode is MANUAL, compute left/right motor bytes from rc_channels.
+
+    Mirrors the Yukon firmware behaviour: in MANUAL mode the Yukon drives
+    motors directly from iBUS rather than waiting for CMD_LEFT/CMD_RIGHT.
+    Calling this in the display/animation loop keeps the motor bars live.
+    """
+    _DEADZONE = 30
+    _CH_MID   = 1500
+
+    def _norm(v):
+        raw = v - _CH_MID
+        if abs(raw) < _DEADZONE:
+            return 0.0
+        return max(-1.0, min(1.0, raw / 500.0))
+
+    def _to_byte(s):
+        s = max(-1.0, min(1.0, s))
+        return round(s * 100) if s >= 0.0 else 100 + round(abs(s) * 100)
+
+    with _lock:
+        if _state['rc_mode'] != RC_MANUAL:
+            return
+        ch    = _state['rc_channels']
+        thr   = _norm(ch[2])   # CH3 throttle
+        ste   = _norm(ch[0])   # CH1 aileron/steer
+        spd   = 0.25 + max(0.0, min(1.0, (ch[5] - 1000) / 1000.0)) * 0.75  # CH6
+        left  = max(-1.0, min(1.0, thr - ste)) * spd
+        right = max(-1.0, min(1.0, thr + ste)) * spd
+        _state['left_byte']  = _to_byte(left)
+        _state['right_byte'] = _to_byte(right)
+
+
+# ---------------------------------------------------------------------------
+# iBUS reader  (optional — pipe ibus_sim channels into rc_channels/rc_valid)
+# ---------------------------------------------------------------------------
+
+_IBUS_FAILSAFE = 0.5   # seconds without a valid packet → rc_valid = False
+
+
+def _ibus_reader_thread(port):
+    sys.path.insert(0, _ROOT)
+    from drivers.ibus import IBusReader, IBusError
+    last_valid = 0.0
+    while True:
+        with _lock:
+            if not _state['running']:
+                return
+        try:
+            with IBusReader(port, timeout=0.5) as ibus:
+                while True:
+                    with _lock:
+                        if not _state['running']:
+                            return
+                    channels = ibus.read()
+                    now = time.monotonic()
+                    with _lock:
+                        if channels:
+                            _state['rc_channels'] = channels
+                            _state['rc_valid']    = True
+                            last_valid = now
+                        elif now - last_valid > _IBUS_FAILSAFE:
+                            _state['rc_valid'] = False
+                    if channels:
+                        _tick_manual_drive()
+        except Exception:
+            with _lock:
+                _state['rc_valid'] = False
+            time.sleep(1.0)
+
+
+def start_ibus_reader(port):
+    """Start a background thread reading iBUS packets from *port* into rc_channels."""
+    with _lock:
+        _state['ibus_port'] = port
+    t = threading.Thread(target=_ibus_reader_thread, args=(port,), daemon=True)
+    t.start()
+
+
+# ---------------------------------------------------------------------------
 # Yukon PTY server  (background thread)
 # ---------------------------------------------------------------------------
 
@@ -431,11 +521,16 @@ def yukon_server(master_fd):
                             _state['strip_pixels'] = [(0, 0, 0)] * NUM_LEDS
 
                     elif cmd_code == CMD_MODE:
+                        prev_mode = _state['rc_mode']
                         _state['rc_mode'] = value
                         if value == RC_ESTOP:
                             _state['left_byte']      = 0
                             _state['right_byte']     = 0
                             _state['bearing_target'] = None
+                        elif value == RC_AUTO and prev_mode == RC_MANUAL:
+                            # Clear MANUAL-computed bytes; Pi will send CMD_LEFT/RIGHT
+                            _state['left_byte']  = None
+                            _state['right_byte'] = None
 
                     elif cmd_code == CMD_RC_QUERY:
                         # 14 channel packets + 1 validity packet then ACK
@@ -484,6 +579,9 @@ def draw(yukon_path):
         led_b        = _state['led_b']
         cmds         = _state['cmds_rx']
         rc_mode      = _state['rc_mode']
+        rc_valid     = _state['rc_valid']
+        rc_ch        = list(_state['rc_channels'])
+        ibus_port    = _state['ibus_port']
         imu_present  = _state['imu_present']
         imu_heading  = _state['imu_heading']
         imu_pitch    = _state['imu_pitch']
@@ -516,12 +614,16 @@ def draw(yukon_path):
 
     mode_str = RC_MODE_NAMES.get(rc_mode, str(rc_mode))
 
+    ibus_str = (f'{ibus_port}   RC: {"OK" if rc_valid else "LOST"}'
+                f'   thr={rc_ch[2]:4d} ste={rc_ch[0]:4d}') if ibus_port else 'none'
+
     lines = [
         '\033[2J\033[H',
         '=== Yukon Simulator ' + '=' * 42,
         f'  Yukon port : {yukon_path}',
         f'  Connect any client with --port {yukon_path}',
         f'  Mode       : {mode_str}',
+        f'  iBUS       : {ibus_str}',
         '--- Motor commands received ' + '-' * 34,
         speed_line('Left ', rx_l),
         speed_line('Right', rx_r),
@@ -554,6 +656,9 @@ def draw(yukon_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Yukon serial simulator")
+    parser.add_argument('--ibus-port', metavar='DEV',
+                        help='iBUS PTY/device to read RC channels from '
+                             '(e.g. the PTY printed by ibus_sim.py)')
     args = parser.parse_args()
 
     # Yukon PTY (emulates /dev/ttyACM0)
@@ -564,6 +669,8 @@ def main():
     # Print command before entering raw mode
     print(f'Yukon PTY  : {yukon_path}', file=sys.stderr)
     print(f'Connect with --port {yukon_path}', file=sys.stderr)
+    if args.ibus_port:
+        print(f'iBUS reader: {args.ibus_port}', file=sys.stderr)
     print('(press Q to quit)', file=sys.stderr)
 
     # Launch Yukon protocol server thread
@@ -573,6 +680,9 @@ def main():
     # Initialise IMU tick timestamp
     with _lock:
         _state['last_imu_tick'] = time.monotonic()
+
+    if args.ibus_port:
+        start_ibus_reader(args.ibus_port)
 
     # Save terminal state; enter raw mode for single-keypress input
     stdin_fd  = sys.stdin.fileno()
@@ -587,6 +697,7 @@ def main():
             # Tick IMU heading toward bearing target
             _tick_imu()
             _tick_strip()
+            _tick_manual_drive()
 
             if now - last_draw >= 0.1:
                 try:

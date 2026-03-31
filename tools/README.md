@@ -375,17 +375,66 @@ Output: `docs/checkerboard_9x6.pdf`
 
 ## Simulators
 
+### ibus_sim.py
+
+Interactive iBUS RC receiver simulator — creates a PTY and emits iBUS packets at ~143 Hz, mimicking a FlySky receiver connected to a RadioMaster TX-16S.
+
+```bash
+python3 tools/ibus_sim.py
+python3 tools/ibus_sim.py --hz 143 --step 50
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--hz N` | `143` | Packet rate in Hz (~7 ms/packet, matching real hardware) |
+| `--step N` | `50` | Stick µs change per keypress |
+
+**Keys**
+
+| Key | Action |
+|-----|--------|
+| `W` / `S` | Throttle up / down (CH3) |
+| `A` / `D` | Rudder left / right (CH4) |
+| Arrow keys | Aileron / elevator (CH1 / CH2) |
+| `1` | Toggle SwA — MANUAL / AUTO (CH5) |
+| `2` | Cycle SwB — slow 25% / mid / max (CH6) |
+| `3` | Cycle SwC — Camera / GPS / Cam+GPS (CH7) |
+| `4` | Toggle SwD — GPS log off / on (CH8) |
+| `5` | Momentary bookmark pulse (CH10, 300 ms) |
+| `Space` | Centre sticks and drop throttle to 1000 |
+| `V` | Toggle RC signal loss (stops emitting packets) |
+| `Q` | Quit |
+
+On startup the PTY path is printed to stderr. Pass it to any consumer:
+
+```bash
+# Pipe into rc_drive.py
+python3 rc_drive.py --ibus-port /dev/pts/3
+
+# Pipe into yukon_sim so CMD_RC_QUERY returns live stick values
+python3 tools/yukon_sim_gui.py --ibus-port /dev/pts/3
+```
+
+---
+
 ### yukon_sim.py
 
 PTY-based Yukon USB serial simulator for offline development and testing.
 
 ```bash
 python3 tools/yukon_sim.py
+python3 tools/yukon_sim.py --ibus-port /dev/pts/3
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from (e.g. `ibus_sim.py` PTY) |
 
 Creates a virtual serial port (PTY) that emulates `/dev/ttyACM0`:
 - Parses 5-byte command packets and responds with ACK/NAK.
 - Returns simulated sensor data for `CMD_SENSOR`.
+- Responds to `CMD_RC_QUERY` with the current simulated RC channels.
+- In MANUAL mode, derives motor bar values from `rc_channels` (mirrors Yukon firmware iBUS tank-mix).
 
 Point any client (`robot_daemon.py`, `tools/test_main.py`) at the PTY path printed on startup.
 
@@ -393,11 +442,19 @@ Point any client (`robot_daemon.py`, `tools/test_main.py`) at the PTY path print
 
 ### yukon_sim_gui.py
 
-Pygame GUI front-end for the Yukon simulator — shows live motor bars and sensor sliders.
+Pygame GUI front-end for the Yukon simulator — shows live motor bars, compass, sensor sliders, and LED strip.
 
 ```bash
 python3 tools/yukon_sim_gui.py
+python3 tools/yukon_sim_gui.py --ibus-port /dev/pts/3
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from |
+| `--no-terminal` | off | Suppress terminal draw() output |
+
+Motor bars update in both MANUAL mode (driven from RC channels) and AUTO mode (driven from `CMD_LEFT`/`CMD_RIGHT`).
 
 ---
 
@@ -407,11 +464,13 @@ Web front-end for the Yukon simulator — serves a browser dashboard for motor a
 
 ```bash
 python3 tools/yukon_sim_web.py
+python3 tools/yukon_sim_web.py --ibus-port /dev/pts/3
 python3 tools/yukon_sim_web.py --host 0.0.0.0 --port 5002
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from |
 | `--host HOST` | `0.0.0.0` | Bind address |
 | `--port N` | `5002` | HTTP port |
 

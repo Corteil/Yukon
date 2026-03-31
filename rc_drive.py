@@ -15,7 +15,7 @@ CMD_KILL is sent and motors stay stopped until signal returns.
 
 Usage:
     python3 rc_drive.py
-    python3 rc_drive.py --port /dev/ttyACM0 --ibus-port /dev/ttyAMA3
+    python3 rc_drive.py --yukon-port /dev/ttyACM0 --ibus-port /dev/ttyAMA3
     python3 rc_drive.py --reverse-left          # flip left-side motor direction
     python3 rc_drive.py --reverse-right         # flip right-side motor direction
     python3 rc_drive.py --throttle-ch 3 --steer-ch 1   # default channel mapping
@@ -40,6 +40,9 @@ NAK  = 0x15
 CMD_LEFT  = 2
 CMD_RIGHT = 3
 CMD_KILL  = 4
+CMD_MODE  = 11
+
+RC_AUTO   = 1
 
 # ---------------------------------------------------------------------------
 # RC / mixing config
@@ -168,6 +171,9 @@ def _ramp(current, target, max_delta):
     return current + (max_delta if diff > 0 else -max_delta)
 
 
+MODE_HEARTBEAT_INTERVAL = 0.1   # seconds between CMD_MODE=AUTO heartbeats
+
+
 def rc_loop(yukon, ibus, throttle_ch, steer_ch, reverse_left, reverse_right, ramp_rate=RAMP_RATE):
     last_left_b   = None
     last_right_b  = None
@@ -178,6 +184,7 @@ def rc_loop(yukon, ibus, throttle_ch, steer_ch, reverse_left, reverse_right, ram
     target_left   = 0.0
     target_right  = 0.0
     last_time     = time.monotonic()
+    last_mode_t   = 0.0   # force immediate send on first iteration
 
     print("RC control active. Ctrl+C to stop.")
     print(f"  throttle=CH{throttle_ch + 1}  steer=CH{steer_ch + 1}"
@@ -190,6 +197,11 @@ def rc_loop(yukon, ibus, throttle_ch, steer_ch, reverse_left, reverse_right, ram
         now = time.monotonic()
         dt  = min(now - last_time, 0.1)   # cap to avoid a large jump after a pause
         last_time = now
+
+        # Keep Yukon in AUTO mode (firmware watchdog requires this every 500 ms)
+        if now - last_mode_t >= MODE_HEARTBEAT_INTERVAL:
+            yukon.send(CMD_MODE, RC_AUTO)
+            last_mode_t = now
 
         if channels:
             last_packet = now
@@ -252,7 +264,7 @@ def _find_yukon_port():
 
 def main():
     parser = argparse.ArgumentParser(description="iBUS RC drive for HackyRacingRobot")
-    parser.add_argument("--port",          help="Yukon USB serial port (auto-detected if omitted)")
+    parser.add_argument("--yukon-port",    help="Yukon USB serial port (auto-detected if omitted)")
     parser.add_argument("--ibus-port",     default="/dev/ttyAMA3",
                         help="iBUS UART device (default: /dev/ttyAMA3)")
     parser.add_argument("--throttle-ch",   type=int, default=3, metavar="N",
@@ -282,7 +294,7 @@ def main():
         print("pyserial not installed. Run:  pip install pyserial")
         sys.exit(1)
 
-    port = args.port or _find_yukon_port()
+    port = args.yukon_port or _find_yukon_port()
     if not port:
         print("No Yukon port found. Use --port /dev/ttyACM0.")
         sys.exit(1)

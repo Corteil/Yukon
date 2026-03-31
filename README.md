@@ -69,7 +69,10 @@ tools/
   upload.py                 MicroPython uploader (handles Yukon USB reset)
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)
   generate_aruco_tags.py    Generate ArUco tag PDFs
-  yukon_sim.py              PTY-based Yukon serial simulator
+  ibus_sim.py               Interactive iBUS RC receiver simulator (PTY)
+  yukon_sim.py              PTY-based Yukon serial simulator (headless)
+  yukon_sim_gui.py          Yukon simulator with Pygame GUI
+  yukon_sim_web.py          Yukon simulator with browser dashboard (port 5002)
   read_data_log.py          Web viewer for JSONL data logs (port 5004)
   test_*.py                 Unit tests and live-display tools
 docs/

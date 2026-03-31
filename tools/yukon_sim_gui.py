@@ -337,9 +337,10 @@ def run_gui(yukon_path, no_terminal=False):
         if fault_left != prev_fl or fault_right != prev_fr:
             _sim.set_fault_leds()
 
-        # Tick IMU and LED strip patterns
+        # Tick IMU, LED strip patterns, and MANUAL-mode motor simulation
         _sim._tick_imu()
         _sim._tick_strip()
+        _sim._tick_manual_drive()
 
         # ── Read state ───────────────────────────────────────────────────────
         with _sim._lock:
@@ -522,6 +523,9 @@ def main():
     parser = argparse.ArgumentParser(description="Yukon simulator GUI")
     parser.add_argument("--no-terminal", action="store_true",
                         help="Suppress terminal draw() output")
+    parser.add_argument('--ibus-port', metavar='DEV',
+                        help='iBUS PTY/device to read RC channels from '
+                             '(e.g. the PTY printed by ibus_sim.py)')
     args = parser.parse_args()
 
     # Create PTY
@@ -531,6 +535,8 @@ def main():
 
     print(f"Yukon PTY  : {yukon_path}", file=sys.stderr)
     print(f"Connect with --port {yukon_path}", file=sys.stderr)
+    if args.ibus_port:
+        print(f"iBUS reader: {args.ibus_port}", file=sys.stderr)
 
     # Initialise IMU tick timestamp
     with _sim._lock:
@@ -545,6 +551,9 @@ def main():
     t_srv = threading.Thread(target=_sim.yukon_server,
                              args=(yukon_master,), daemon=True)
     t_srv.start()
+
+    if args.ibus_port:
+        _sim.start_ibus_reader(args.ibus_port)
 
     try:
         run_gui(yukon_path, no_terminal=args.no_terminal)

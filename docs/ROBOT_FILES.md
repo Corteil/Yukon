@@ -300,6 +300,10 @@ stack, or as a fallback if `robot_daemon.py` will not start.
 
 Tank mix: `left = clamp(throttle − aileron)`, `right = clamp(throttle + aileron)`
 
+Sends a `CMD_MODE=AUTO` heartbeat to the Yukon every 100 ms — required because the
+Yukon firmware only accepts `CMD_LEFT`/`CMD_RIGHT` in AUTO mode, and will ESTOP
+within 500 ms if the heartbeat stops (Pi crash / USB disconnect watchdog).
+
 Failsafe: sends `CMD_KILL` if no valid iBUS packet is received for 0.5 s.
 
 ```bash

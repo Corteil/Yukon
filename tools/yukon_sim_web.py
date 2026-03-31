@@ -87,6 +87,7 @@ def api_state():
         while True:
             _sim._tick_imu()
             _sim._tick_strip()
+            _sim._tick_manual_drive()
             yield f"data: {json.dumps(_get_state())}\n\n"
             time.sleep(0.1)
     return Response(_gen(), mimetype='text/event-stream',
@@ -595,6 +596,9 @@ def main():
     parser = argparse.ArgumentParser(description="Yukon simulator web GUI")
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', default=5002, type=int)
+    parser.add_argument('--ibus-port', metavar='DEV',
+                        help='iBUS PTY/device to read RC channels from '
+                             '(e.g. the PTY printed by ibus_sim.py)')
     args = parser.parse_args()
 
     # Create PTY
@@ -604,6 +608,8 @@ def main():
 
     print(f"Yukon PTY  : {_yukon_path}", file=sys.stderr)
     print(f"Connect with --port {_yukon_path}", file=sys.stderr)
+    if args.ibus_port:
+        print(f"iBUS reader: {args.ibus_port}", file=sys.stderr)
     print(f"Web GUI    : http://{_local_ip()}:{args.port}/", file=sys.stderr)
 
     # Initialise sim state
@@ -616,6 +622,9 @@ def main():
     t_srv = threading.Thread(target=_sim.yukon_server,
                              args=(yukon_master,), daemon=True)
     t_srv.start()
+
+    if args.ibus_port:
+        _sim.start_ibus_reader(args.ibus_port)
 
     try:
         import logging
