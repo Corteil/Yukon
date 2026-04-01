@@ -32,10 +32,7 @@ SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
 FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
 NUM_LEDS               = 8     # number of NeoPixels on the LED strip module
-BENCH_VOLTAGE          = 10.0 # PowerBench set_voltage() value to get 5 V out.
-                               # The module's feedback divider means the actual output
-                               # is half the value passed to set_voltage(), so double
-                               # the desired voltage here.
+BENCH_VOLTAGE          = 5.0  # Target output voltage in volts (set_voltage() is 1:1).
 
 # Bearing-hold proportional gain.
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
@@ -471,8 +468,9 @@ try:
     yukon.verify_and_initialise()
     yukon.enable_main_output()
 
-    module_bench.set_voltage(BENCH_VOLTAGE)
     module_bench.enable()
+    sleep_ms(500)                # allow module to come up before setting voltage
+    module_bench.set_voltage(BENCH_VOLTAGE)
 
     module1.enable()
     _set_strip(0, 0, 0)   # strip off at startup
@@ -800,6 +798,8 @@ try:
             try:
                 yukon.enable_main_output()
                 module_bench.enable()
+                sleep_ms(500)
+                module_bench.set_voltage(BENCH_VOLTAGE)
                 module2.enable()
                 module5.enable()
                 _pattern = 0
