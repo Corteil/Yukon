@@ -130,6 +130,7 @@ RobotState          # Full snapshot returned by get_state()
 | 0x28 | CMD_PIXEL_SET | Stage one pixel colour (no hardware update) |
 | 0x29 | CMD_PIXEL_SHOW | Push staged pixel data to strip |
 | 0x2A | CMD_PATTERN | Start autonomous LED animation |
+| 0x2D | CMD_BENCH | 0 = disable bench power output, 1 = enable |
 
 Responses: `ACK (0x06)` / `NAK (0x15)`. Sensor data comes as a sequence of 5-byte `(RESP_TYPE, V_HIGH, V_LOW, CHK)` packets followed by ACK. See `docs/PROTOCOL.md` for full encoding.
 

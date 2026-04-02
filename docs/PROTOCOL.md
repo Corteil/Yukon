@@ -13,7 +13,7 @@ Communication between the Raspberry Pi (host) and the Pimoroni Yukon (RP2040) us
 | Field  | Encoding                     | Range             |
 |--------|------------------------------|-------------------|
 | SYNC   | `0x7E` (`~`) — fixed marker  | always `0x7E`     |
-| CMD    | `cmd_code + 0x20`            | `0x21–0x2C`       |
+| CMD    | `cmd_code + 0x20`            | `0x21–0x2D`       |
 | V_HIGH | `(value >> 4) + 0x40`        | `0x40–0x4F`       |
 | V_LOW  | `(value & 0xF) + 0x50`       | `0x50–0x5F`       |
 | CHK    | `CMD ^ V_HIGH ^ V_LOW`       | never equals SYNC, ACK, or NAK |
@@ -38,6 +38,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_PATTERN`    | 10   | High nibble = colour index (0=keep current), low nibble = pattern (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge 6=estop_flash) |
 | `CMD_MODE`       | 11   | 0 = MANUAL, 1 = AUTO, 2 = ESTOP. Must be sent at ≥2 Hz as a Pi heartbeat; if absent for 500 ms the Yukon triggers ESTOP. |
 | `CMD_RC_QUERY`   | 12   | Ignored — Yukon replies with 15 RC data packets (14 channels + validity) then ACK |
+| `CMD_BENCH`      | 13   | 0 = disable bench power output, 1 = enable (re-applies target voltage after 500 ms settle) |
 
 ---
 

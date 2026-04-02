@@ -217,6 +217,7 @@ class RobotState:
     nav_wp_bear:     Optional[float] = None  # bearing to current GPS waypoint
     nav_bearing_err: Optional[float] = None  # ArUco navigator bearing error (degrees)
     no_motors:       bool        = False  # drive commands suppressed
+    bench_enabled:   bool        = False  # bench power output enabled
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -249,6 +250,7 @@ class _YukonLink:
                          #        patterns: 0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge
     CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
+    CMD_BENCH    = 13  # value: 0=disable bench power output, 1=enable
 
     RESP_IDS     = range(12)  # 0..11 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
@@ -512,6 +514,13 @@ class _YukonLink:
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_KILL, 0))
             self._drain(1, timeout=0.5)
+
+    def set_bench(self, on: bool):
+        """Enable or disable the bench power output. Thread-safe."""
+        self._check_open()
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_BENCH, 1 if on else 0))
+            self._drain(1)
 
     @staticmethod
     def _bearing_byte(degrees: float) -> int:
@@ -1772,6 +1781,7 @@ class Robot:
         self._speed_min   = speed_min
         self._control_hz  = control_hz
         self._no_motors   = no_motors
+        self._bench_enabled = False
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
         _ini = configparser.ConfigParser(inline_comment_prefixes=('#',))
@@ -2050,6 +2060,17 @@ class Robot:
             self._mode = RobotMode.MANUAL
         log.info("ESTOP cleared → MANUAL (re-engage AUTO switch to restart navigator)")
 
+    def set_bench(self, on: bool):
+        """Enable or disable the bench power module output."""
+        import serial as _serial
+        self._bench_enabled = on
+        if self._yukon:
+            try:
+                self._yukon.set_bench(on)
+            except (_serial.SerialException, OSError):
+                pass
+        log.info("Bench power %s", "ON" if on else "OFF")
+
     # ── drive API (autonomous mode) ──────────────────────────────────────────
 
     def drive(self, left: float, right: float):
@@ -2110,6 +2131,7 @@ class Robot:
             nav_wp_bear     = self._gps_navigator.bearing_to_wp  if self._gps_navigator else None,
             nav_bearing_err = self._navigator.bearing_err        if self._navigator     else None,
             no_motors       = self._no_motors,
+            bench_enabled   = self._bench_enabled,
         )
 
     def get_heading(self) -> Optional[float]:

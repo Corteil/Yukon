@@ -34,6 +34,8 @@ import tty
 import argparse
 import random
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # ---------------------------------------------------------------------------
 # Protocol constants
 # ---------------------------------------------------------------------------
@@ -53,8 +55,11 @@ CMD_PIXEL_SHOW = 9
 CMD_PATTERN    = 10
 CMD_MODE       = 11
 CMD_RC_QUERY   = 12
+CMD_BENCH      = 13
 
-RESP_RC_BASE   = 8   # resp IDs 8–21 = RC channels 0–13, 22 = validity flag
+RESP_RC_BASE    = 8   # resp IDs 8–21 = RC channels 0–13, 22 = validity flag
+RESP_BENCH_TEMP  = 10
+RESP_BENCH_FAULT = 11
 
 RC_MANUAL    = 0
 RC_AUTO      = 1
@@ -132,6 +137,8 @@ _state = {
     'last_imu_tick'       : 0.0,
     'fault_l'             : False,
     'fault_r'             : False,
+    'bench_enabled'       : False,
+    'bench_fault'         : False,
     'strip_pixels'        : [(0, 0, 0)] * NUM_LEDS,
     'strip_pattern'       : 0,
     'strip_pat_pos'       : 0,
@@ -432,7 +439,7 @@ def yukon_server(master_fd):
             continue
 
         if sm == 'CMD':
-            if 0x21 <= b <= 0x2C:
+            if 0x21 <= b <= 0x2D:
                 pkt_cmd = b; sm = 'V_HIGH'
             else:
                 os.write(master_fd, bytes([NAK])); sm = 'SYNC'
@@ -520,6 +527,8 @@ def yukon_server(master_fd):
                             _send_sensor_packet(master_fd, RESP_RC_BASE + i,
                                                 (us - 1000) // 5)
                         _send_sensor_packet(master_fd, RESP_RC_BASE + 14, valid)
+                    elif cmd_code == CMD_BENCH:
+                        _state['bench_enabled'] = bool(value)
                     elif cmd_code == CMD_SENSOR:
                         _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
                         _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
@@ -528,6 +537,8 @@ def yukon_server(master_fd):
                         _send_sensor_packet(master_fd, RESP_TEMP_R,  SIM_TEMP_MOD * 3)
                         _send_sensor_packet(master_fd, RESP_FAULT_L, int(_state.get('fault_l', False)))
                         _send_sensor_packet(master_fd, RESP_FAULT_R, int(_state.get('fault_r', False)))
+                        _send_sensor_packet(master_fd, RESP_BENCH_TEMP,  SIM_TEMP_MOD * 3)
+                        _send_sensor_packet(master_fd, RESP_BENCH_FAULT, int(_state.get('bench_fault', False)))
                         if _state['imu_present']:
                             _send_sensor_packet(master_fd, RESP_HEADING,
                                                 _bearing_encode(_state['imu_heading']))
@@ -564,9 +575,11 @@ def _draw_headless(yukon_path):
         imu_heading  = _state['imu_heading']
         imu_pitch    = _state['imu_pitch']
         imu_roll     = _state['imu_roll']
-        bearing_tgt  = _state['bearing_target']
-        strip_pixels = list(_state['strip_pixels'])
-        strip_pat    = _state['strip_pattern']
+        bearing_tgt   = _state['bearing_target']
+        bench_enabled = _state.get('bench_enabled', False)
+        bench_fault   = _state.get('bench_fault', False)
+        strip_pixels  = list(_state['strip_pixels'])
+        strip_pat     = _state['strip_pattern']
 
     rx_l = _decode_speed(lb)
     rx_r = _decode_speed(rb)
@@ -614,6 +627,8 @@ def _draw_headless(yukon_path):
         '--- Status ' + '-' * 51,
         f'  LED A: {"ON " if led_a else "OFF"}  LED B: {"ON " if led_b else "OFF"}'
         f'  Cmds rx: {cmds}',
+        f'  Bench  : {"ON " if bench_enabled else "OFF"}'
+        f'{"  FAULT" if bench_fault else ""}',
         '--- LED Strip ' + '-' * 48,
         '  ' + ''.join(
             f'\033[48;2;{r};{g};{b}m  \033[0m' for r, g, b in strip_pixels
@@ -927,8 +942,10 @@ def run_gui(yukon_path):
             imu_heading  = _state['imu_heading']
             imu_pitch    = _state['imu_pitch']
             imu_roll     = _state['imu_roll']
-            bearing_tgt  = _state['bearing_target']
-            strip_pixels = list(_state['strip_pixels'])
+            bearing_tgt   = _state['bearing_target']
+            bench_enabled = _state.get('bench_enabled', False)
+            bench_fault   = _state.get('bench_fault', False)
+            strip_pixels  = list(_state['strip_pixels'])
             strip_pat    = _state['strip_pattern']
 
         rx_l = _decode_speed(lb)
@@ -988,7 +1005,7 @@ def run_gui(yukon_path):
         _label(screen, f"Cmds rx: {cmds}", mid_panel.x + 12, mid_panel.bottom - 22)
 
         # Sim values panel
-        stat_panel = pygame.Rect(370, 352, 240, 130)
+        stat_panel = pygame.Rect(370, 352, 240, 155)
         _panel(screen, stat_panel, "Sim Values")
         _label(screen, f"Voltage : {volt_slider.value:.1f} V", stat_panel.x+12, stat_panel.y+26, C_YELLOW)
         _label(screen, f"Current : {curr_slider.value:.2f} A", stat_panel.x+12, stat_panel.y+50, C_ORANGE)
@@ -996,6 +1013,9 @@ def run_gui(yukon_path):
         fr_col = C_RED if fault_right else C_GRAY
         _label(screen, f"Fault L : {'YES' if fault_left  else 'no'}", stat_panel.x+12, stat_panel.y+74, fl_col)
         _label(screen, f"Fault R : {'YES' if fault_right else 'no'}", stat_panel.x+12, stat_panel.y+98, fr_col)
+        bench_col = (C_RED if bench_fault else C_GREEN) if bench_enabled else C_GRAY
+        bench_str = ('ON' + (' FAULT' if bench_fault else '')) if bench_enabled else 'OFF'
+        _label(screen, f"Bench   : {bench_str}", stat_panel.x+12, stat_panel.y+122, bench_col)
 
         # IMU pitch/roll
         imu_panel = pygame.Rect(370, 492, 240, 65)
@@ -1088,6 +1108,8 @@ def _build_web_app():
             'bearing_target': s.get('bearing_target'),
             'fault_l'       : s.get('fault_l', False),
             'fault_r'       : s.get('fault_r', False),
+            'bench_enabled' : s.get('bench_enabled', False),
+            'bench_fault'   : s.get('bench_fault', False),
             'voltage'       : round(SIM_VOLTAGE, 2),
             'current'       : round(SIM_CURRENT, 3),
             'yukon_port'    : _yukon_path[0],
@@ -1303,6 +1325,7 @@ button.active{background:#1a2a1a}
       <span class="badge" id="bdg-cmds">Cmds: 0</span>
       <span class="badge" id="bdg-fl">Fault L: --</span>
       <span class="badge" id="bdg-fr">Fault R: --</span>
+      <span class="badge" id="bdg-bench">Bench: OFF</span>
       <span class="badge" id="bdg-hold">Hold: off</span>
     </div>
     <h2 style="margin-top:14px">Sim Values</h2>
@@ -1430,6 +1453,8 @@ function applyState(s) {
   });
   setBadge('bdg-fl',`Fault L: ${s.fault_l?'YES':'no'}`,s.fault_l?'err':'');
   setBadge('bdg-fr',`Fault R: ${s.fault_r?'YES':'no'}`,s.fault_r?'err':'');
+  setBadge('bdg-bench',`Bench: ${s.bench_enabled?(s.bench_fault?'ON FAULT':'ON'):'OFF'}`,
+           s.bench_enabled?(s.bench_fault?'err':'ok'):'');
   el('btn-fl').className='btn-red'+(s.fault_l?' active':'');
   el('btn-fr').className='btn-red'+(s.fault_r?' active':'');
   setBadge('bdg-volt',`${s.voltage.toFixed(1)} V`,'info');

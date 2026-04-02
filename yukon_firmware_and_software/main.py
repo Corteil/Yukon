@@ -4,7 +4,7 @@ import sys
 import select
 import random
 
-from pimoroni_yukon import Yukon, SLOT1, SLOT2, SLOT3, SLOT5
+from pimoroni_yukon import Yukon, SLOT2, SLOT3, SLOT4, SLOT5
 from pimoroni_yukon.modules import BenchPowerModule, DualMotorModule, LEDStripModule
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
                                    OverCurrentError, OverTemperatureError)
@@ -73,6 +73,7 @@ CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low n
                      #        patterns: 0=off, 1=larson, 2=random, 3=rainbow, 4=retro_computer, 5=converge
 CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
 CMD_RC_QUERY = 12  # value: ignored — replies with 14 channel packets + validity byte then ACK
+CMD_BENCH    = 13  # value: 0=disable bench power output, 1=enable bench power output
 RESP_RC_BASE = 8   # response IDs 8-21 = channels 0-13; ID 22 = RC validity flag
 
 # CMD_SENSOR response IDs
@@ -102,6 +103,7 @@ _current_pitch   = 0.0     # degrees, positive = nose up
 _current_roll    = 0.0     # degrees, positive = right side down
 _imu_ok          = False   # set True once IMU initialises successfully
 _running         = True
+_running_ref     = [True]  # single-element list so Core 1 can observe shutdown without global lookup
 
 # ── RC / drive mode state ─────────────────────────────────────────────────────
 RC_MANUAL             = 0
@@ -190,18 +192,22 @@ def _ibus_tank_mix_raw(ch):
             max(-1.0, min(1.0, thr + ste)) * scale)
 
 
-def _decode_ibus():
-    """Validate and decode the completed 32-byte iBUS buffer. Updates shared state."""
-    expected = (0xFFFF - sum(_ibus_buf[:30])) & 0xFFFF
-    stored   = _ibus_buf[30] | (_ibus_buf[31] << 8)
+def _decode_ibus(buf, st, lock, motor_sp, rc_channels, rc_ts):
+    """Validate and decode the completed 32-byte iBUS buffer. Updates shared state.
+
+    All mutable shared objects are passed as arguments — same Core 1
+    global-visibility workaround as _ibus_poll().
+    """
+    expected = (0xFFFF - sum(buf[:30])) & 0xFFFF
+    stored   = buf[30] | (buf[31] << 8)
     if expected != stored:
-        _ibus_st[4] += 1
+        st[4] += 1
         return
-    _ibus_st[3] += 1
+    st[3] += 1
     ch = []
     for i in range(14):
         off = 2 + i * 2
-        v   = _ibus_buf[off] | (_ibus_buf[off + 1] << 8)
+        v   = buf[off] | (buf[off + 1] << 8)
         ch.append(max(1000, min(2000, v)))
     # Compute motor speeds before locking (pure maths, no shared state read)
     # No-motors mode: Pi is sending CMD_RC_QUERY but not CMD_MODE → suppress iBUS motor control
@@ -209,13 +215,13 @@ def _decode_ibus():
     left = right = None
     if _rc_mode == RC_MANUAL and not _pi_no_motors:
         left, right = _ibus_tank_mix_raw(ch)
-    _lock.acquire()
-    _rc_channels[:] = ch
-    _rc_ts[0]        = ticks_ms()
+    lock.acquire()
+    rc_channels[:] = ch
+    rc_ts[0]       = ticks_ms()
     if left is not None:
-        _motor_sp[0] = left
-        _motor_sp[1] = right
-    _lock.release()
+        motor_sp[0] = left
+        motor_sp[1] = right
+    lock.release()
 
 
 def _ibus_poll(sm, buf, st):
@@ -223,7 +229,7 @@ def _ibus_poll(sm, buf, st):
 
     All state is passed as parameters — avoids module-global lookups from
     sub-functions called on core 1, which are unreliable on this MicroPython build.
-    Caller (motor_core) is responsible for calling _decode_ibus() when True is returned.
+    Caller (motor_core) is responsible for calling _decode_ibus(buf, st) when True is returned.
     """
     if sm is None:
         return False
@@ -385,42 +391,32 @@ def _update_pattern():
 
 # ── Core 1: motor drive loop ──────────────────────────────────────────────────
 
-def motor_core(module_left, module_right):
+def motor_core(module_left, module_right,
+               ibus_sm, ibus_buf, ibus_st,
+               lock, motor_sp, rc_channels, rc_ts,
+               fn_poll, fn_decode, fn_angle_diff,
+               bearing_kp, running_ref):
     """Continuously apply the latest motor speeds with optional bearing hold.
 
-    Runs on core 1.  The 20 ms sleep is replaced with a tight _ibus_poll()
-    loop so the PIO FIFO is drained every iteration (<100 µs) — fast enough
-    to receive every byte of each 32-byte iBUS packet before the 4-deep FIFO
-    overflows.  Core 0 keeps its original blocking select() so the USB/serial
-    link stays stable.
+    Runs on core 1.  All required state is passed as arguments — globals assigned
+    only at module load are not reliably accessible from Core 1 on this
+    MicroPython build, so nothing is looked up via the global dict.
+    running_ref is a single-element list [True] so Core 1 can observe shutdown.
     """
     from utime import ticks_ms, ticks_diff, ticks_add
-    global _running
-    # On this MicroPython build, only a subset of module globals are reachable
-    # from a thread-entry function. Cache everything needed (including function
-    # references) as locals so the hot loop uses only LOAD_FAST.
-    _sm      = _ibus_sm
-    _buf     = _ibus_buf
-    _st      = _ibus_st
-    _poll    = _ibus_poll
-    _decode  = _decode_ibus
-    _lk      = _lock
-    _sp      = _motor_sp
-    _adiff   = _angle_diff
-    _kp      = BEARING_KP
     print("motor_core: started on core 1")
     try:
-        while _running:
-            _lk.acquire()
-            left    = _sp[0]
-            right   = _sp[1]
+        while running_ref[0]:
+            lock.acquire()
+            left    = motor_sp[0]
+            right   = motor_sp[1]
             target  = _bearing_target
             heading = _current_heading
-            _lk.release()
+            lock.release()
 
             if target is not None:
-                error      = _adiff(target, heading)
-                correction = max(-_kp, min(_kp, _kp * error / 180.0))
+                error      = fn_angle_diff(target, heading)
+                correction = max(-bearing_kp, min(bearing_kp, bearing_kp * error / 180.0))
                 left  = max(-1.0, min(1.0, left  + correction))
                 right = max(-1.0, min(1.0, right - correction))
 
@@ -431,22 +427,22 @@ def motor_core(module_left, module_right):
 
             t_end = ticks_add(ticks_ms(), 20)
             while ticks_diff(t_end, ticks_ms()) > 0:
-                if _poll(_sm, _buf, _st):
-                    _decode()
+                if fn_poll(ibus_sm, ibus_buf, ibus_st):
+                    fn_decode(ibus_buf, ibus_st, lock, motor_sp, rc_channels, rc_ts)
     except Exception as e:
         print("motor_core CRASHED:", type(e).__name__, e)
-        _lk.acquire()
-        _sp[0] = 0.0
-        _sp[1] = 0.0
-        _lk.release()
-        _running = False
+        lock.acquire()
+        motor_sp[0] = 0.0
+        motor_sp[1] = 0.0
+        lock.release()
+        running_ref[0] = False
 
 
 
 # ── Hardware setup ────────────────────────────────────────────────────────────
 
 yukon        = Yukon()
-module_bench = BenchPowerModule()             # regulated power output — SLOT1
+module_bench = BenchPowerModule()             # regulated power output — SLOT4
 module1      = LEDStripModule(LEDStripModule.NEOPIXEL, pio=0, sm=0, num_leds=NUM_LEDS)
 module2      = DualMotorModule()              # left motors  — SLOT2
 module5      = DualMotorModule()              # right motors — SLOT5
@@ -465,16 +461,13 @@ except Exception as e:
     print("IMU not available:", e)
 
 try:
-    yukon.register_with_slot(module_bench, SLOT1)
+    yukon.register_with_slot(module_bench, SLOT4)
     yukon.register_with_slot(module1, SLOT3)
     yukon.register_with_slot(module2, SLOT2)
     yukon.register_with_slot(module5, SLOT5)
     yukon.verify_and_initialise()
     yukon.enable_main_output()
-
-    module_bench.enable()
-    sleep_ms(200)                # allow module to come up before setting voltage
-    module_bench.set_voltage(BENCH_VOLTAGE)
+    sleep_ms(500)                # allow main supply to stabilise before enabling modules
 
     module1.enable()
     _set_strip(0, 0, 0)   # strip off at startup
@@ -488,6 +481,8 @@ try:
     module5.enable()
     for motor in module5.motors:
         motor.enable()
+
+    module_bench.set_voltage(BENCH_VOLTAGE)  # pre-program voltage; output stays off until CMD_BENCH enable
 
     sleep(0.1)   # let motor drivers settle before monitoring starts
 
@@ -504,7 +499,13 @@ try:
     print("iBUS SM1 active on GP26")
 
     # Launch motor control on core 1
-    _thread.start_new_thread(motor_core, (module2, module5))
+    _thread.start_new_thread(motor_core, (
+        module2, module5,
+        _ibus_sm, _ibus_buf, _ibus_st,
+        _lock, _motor_sp, _rc_channels, _rc_ts,
+        _ibus_poll, _decode_ibus, _angle_diff,
+        BEARING_KP, _running_ref,
+    ))
 
     # ── Core 0: IMU + serial comms + Yukon monitoring ─────────────────────────
 
@@ -575,7 +576,7 @@ try:
                 continue
 
             if state == 'CMD':
-                if 0x21 <= b <= 0x2C:
+                if 0x21 <= b <= 0x2D:
                     pkt_cmd = b
                     state   = 'V_HIGH'
                 else:
@@ -751,6 +752,13 @@ try:
                             state = 'SYNC'
                             continue
 
+                    elif cmd_code == CMD_BENCH:
+                        if value == 0:
+                            module_bench.disable()
+                        else:
+                            module_bench.enable()
+                            module_bench.set_voltage(BENCH_VOLTAGE)
+
                     _ack()
                 state = 'SYNC'
 
@@ -805,15 +813,16 @@ try:
             sleep_ms(FAULT_COOLDOWN_MS)
             try:
                 yukon.enable_main_output()
-                module_bench.enable()
-                sleep_ms(200)
-                module_bench.set_voltage(BENCH_VOLTAGE)
+                sleep_ms(500)
                 module2.enable()
                 for motor in module2.motors:
                     motor.enable()
                 module5.enable()
                 for motor in module5.motors:
                     motor.enable()
+                module_bench.enable()
+                sleep_ms(500)
+                module_bench.set_voltage(BENCH_VOLTAGE)
                 _pattern = 0
                 _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
@@ -851,6 +860,7 @@ try:
 
 finally:
     _running = False
+    _running_ref[0] = False
     print("Shutting down")
     try:
         _set_strip(0, 0, 0)

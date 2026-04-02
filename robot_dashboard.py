@@ -147,6 +147,7 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         'cam_recording': state.cam_recording,
         'data_logging':  state.data_logging,
         'no_motors':     state.no_motors,
+        'bench_enabled': state.bench_enabled,
         'nav_state':     state.nav_state,
         'nav_gate':      state.nav_gate,
         'nav_bearing_err': nav_bearing_err,
@@ -386,6 +387,7 @@ button:active{background:#2a2a42}
     <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
     <button onclick="sendCmd('record_toggle')" id="btn-rec" title="Toggle recording">⏺ REC</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
+    <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle bench power output">⚡ BENCH</button>
     <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
   </div>
 </div>
@@ -1049,6 +1051,10 @@ function updateStatusBar(s) {
   if(bd){ bd.style.color=s.data_logging?C.purple:C.gray;
           bd.style.borderColor=s.data_logging?C.purple:C.border; }
 
+  const bBench=el('btn-bench');
+  if(bBench){ bBench.style.color=s.bench_enabled?C.green:C.gray;
+              bBench.style.borderColor=s.bench_enabled?C.green:C.border; }
+
   const bReset=el('btn-reset');
   if(bReset){
     if(s.mode==='ESTOP'){
@@ -1684,6 +1690,8 @@ def api_cmd():
             _robot.stop_data_log()
         else:
             _robot.start_data_log()
+    elif cmd == 'bench_toggle':
+        _robot.set_bench(not _robot.get_state().bench_enabled)
     elif cmd == 'set_mode':
         mode = body.get('mode', '')
         if   mode == 'MANUAL': _robot.set_mode(RobotMode.MANUAL)
