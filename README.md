@@ -30,9 +30,9 @@ Open `http://<pi-ip>:5000/` in any browser. On desktop/touchscreen the UI shows 
 | Component | Detail |
 |-----------|--------|
 | Pimoroni Yukon | RP2040-based motor controller |
-| Bench power | `BenchPowerModule` (5 V regulated output) in SLOT1 |
 | Left motors | `DualMotorModule` in SLOT2 |
 | LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
+| Bench power | `BenchPowerModule` (5 V regulated output) in SLOT4 |
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS → Yukon GP26 (PIO UART, decoded by firmware) |
 | Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
