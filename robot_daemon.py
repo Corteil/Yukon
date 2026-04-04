@@ -2597,11 +2597,16 @@ class Robot:
                     if result is not None:
                         channels, rc_valid = result
                         self._rc_channels = channels
+                        # Trust the Yukon's own 500 ms iBUS failsafe directly.
+                        # Update the Pi-side timestamp so the None-fallback below
+                        # stays warm while RC is connected.
+                        self._rc_active = rc_valid
                         if rc_valid:
                             self._rc_ts = time.monotonic()
-                    # Always use time-based hysteresis so a single bad query
-                    # (or brief Yukon-side iBUS gap) doesn't instantly flag RC dropped.
-                    self._rc_active = (time.monotonic() - self._rc_ts) < self._failsafe_s
+                    else:
+                        # query_rc() timed out (serial hiccup) — use local timestamp
+                        # so a single bad exchange doesn't instantly drop RC status.
+                        self._rc_active = (time.monotonic() - self._rc_ts) < self._failsafe_s
                 except (_serial.SerialException, OSError):
                     self._rc_active = False
 
