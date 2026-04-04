@@ -2596,9 +2596,9 @@ class Robot:
                         self._rc_channels = channels
                         if rc_valid:
                             self._rc_ts = time.monotonic()
-                        self._rc_active   = rc_valid
-                    else:
-                        self._rc_active = (time.monotonic() - self._rc_ts) < self._failsafe_s
+                    # Always use time-based hysteresis so a single bad query
+                    # (or brief Yukon-side iBUS gap) doesn't instantly flag RC dropped.
+                    self._rc_active = (time.monotonic() - self._rc_ts) < self._failsafe_s
                 except (_serial.SerialException, OSError):
                     self._rc_active = False
 
