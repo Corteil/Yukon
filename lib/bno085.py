@@ -142,66 +142,76 @@ class BNO085:
     # ── public API ─────────────────────────────────────────────────────────
 
     def update(self):
-        """Read one pending sensor packet. Call once per motor-loop iteration."""
-        channel, payload = self._read_packet()
-        if channel != _CH_REPORTS or not payload:
-            return
-        # Channel 3 payloads may be prefixed by timing sub-records:
-        #   0xFB  Base Timestamp Reference — skip 5 bytes (id + 4-byte ts)
-        #   0xFE  Delta / wake timestamp   — skip 4 bytes (id + 3-byte data)
-        #   0x3F  Compact timing marker    — skip 1 byte
-        # Scan forward until we find the GRV report (0x08).
-        i = 0
-        while i < len(payload):
-            rid = payload[i]
-            if rid == 0xFB:          # base timestamp: 5-byte record
-                i += 5
-            elif rid == 0xFE:        # delta/wake timestamp: 4-byte record
-                i += 4
-            elif rid == 0x3F:        # compact marker: 1-byte record
-                i += 1
-            elif rid == _REPORT_GAME:
-                # 12 bytes: id(1) seq(1) status(1) delay(1) qx(2) qy(2) qz(2) qw(2)
-                if len(payload) < i + 12:
-                    return
-                _Q = 1 << 14
-                qx = struct.unpack_from('<h', payload, i + 4)[0]  / _Q
-                qy = struct.unpack_from('<h', payload, i + 6)[0]  / _Q
-                qz = struct.unpack_from('<h', payload, i + 8)[0]  / _Q
-                qw = struct.unpack_from('<h', payload, i + 10)[0] / _Q
-                self._quat = (qx, qy, qz, qw)
-                self._data_received = True
-                return
-            elif rid == _REPORT_GYRO:
-                # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
-                # Q9 fixed-point: scale = 1/512
-                if len(payload) < i + 10:
-                    return
-                _QG = 1 << 9
-                gx = struct.unpack_from('<h', payload, i + 4)[0] / _QG
-                gy = struct.unpack_from('<h', payload, i + 6)[0] / _QG
-                gz = struct.unpack_from('<h', payload, i + 8)[0] / _QG
-                self._gyro_xyz = (gx, gy, gz)
-                return
-            elif rid == _REPORT_LINEAR_ACCEL:
-                # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
-                # Q8 fixed-point: scale = 1/256
-                if len(payload) < i + 10:
-                    return
-                _QA = 1 << 8
-                ax = struct.unpack_from('<h', payload, i + 4)[0] / _QA
-                ay = struct.unpack_from('<h', payload, i + 6)[0] / _QA
-                az = struct.unpack_from('<h', payload, i + 8)[0] / _QA
-                self._lin_accel = (ax, ay, az)
-                return
-            elif rid == _REPORT_STABILITY:
-                # 6 bytes: id(1) seq(1) status(1) delay(1) classifier(1) reserved(1)
-                if len(payload) < i + 5:
-                    return
-                self._stability = payload[i + 4]
-                return
-            else:
-                return  # unrecognised sub-record
+        """Drain all pending sensor packets. Call once per loop iteration.
+
+        Each I2C readfrom() on the BNO085 dequeues exactly one SHTP packet
+        (the STOP condition advances the hardware FIFO pointer).  With four
+        reports enabled (GRV, gyro, linear-accel, stability) up to four
+        packets can arrive between loop iterations, so a single read leaves
+        the queue backed up and the quaternion stale.  Loop until the device
+        returns an empty packet (length == 0 → payload_len ≤ 0 → (None,None)).
+        """
+        for _ in range(12):   # hard cap — 4 reports × 3× headroom
+            channel, payload = self._read_packet()
+            if channel is None:
+                break         # queue empty or read error — stop draining
+            if channel != _CH_REPORTS or not payload:
+                continue
+            # Channel 3 payloads may be prefixed by timing sub-records:
+            #   0xFB  Base Timestamp Reference — skip 5 bytes (id + 4-byte ts)
+            #   0xFE  Delta / wake timestamp   — skip 4 bytes (id + 3-byte data)
+            #   0x3F  Compact timing marker    — skip 1 byte
+            i = 0
+            while i < len(payload):
+                rid = payload[i]
+                if rid == 0xFB:          # base timestamp: 5-byte record
+                    i += 5
+                elif rid == 0xFE:        # delta/wake timestamp: 4-byte record
+                    i += 4
+                elif rid == 0x3F:        # compact marker: 1-byte record
+                    i += 1
+                elif rid == _REPORT_GAME:
+                    # 12 bytes: id(1) seq(1) status(1) delay(1) qx(2) qy(2) qz(2) qw(2)
+                    if len(payload) < i + 12:
+                        break
+                    _Q = 1 << 14
+                    qx = struct.unpack_from('<h', payload, i + 4)[0]  / _Q
+                    qy = struct.unpack_from('<h', payload, i + 6)[0]  / _Q
+                    qz = struct.unpack_from('<h', payload, i + 8)[0]  / _Q
+                    qw = struct.unpack_from('<h', payload, i + 10)[0] / _Q
+                    self._quat = (qx, qy, qz, qw)
+                    self._data_received = True
+                    break
+                elif rid == _REPORT_GYRO:
+                    # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
+                    # Q9 fixed-point: scale = 1/512
+                    if len(payload) < i + 10:
+                        break
+                    _QG = 1 << 9
+                    gx = struct.unpack_from('<h', payload, i + 4)[0] / _QG
+                    gy = struct.unpack_from('<h', payload, i + 6)[0] / _QG
+                    gz = struct.unpack_from('<h', payload, i + 8)[0] / _QG
+                    self._gyro_xyz = (gx, gy, gz)
+                    break
+                elif rid == _REPORT_LINEAR_ACCEL:
+                    # 10 bytes: id(1) seq(1) status(1) delay(1) x(2) y(2) z(2)
+                    # Q8 fixed-point: scale = 1/256
+                    if len(payload) < i + 10:
+                        break
+                    _QA = 1 << 8
+                    ax = struct.unpack_from('<h', payload, i + 4)[0] / _QA
+                    ay = struct.unpack_from('<h', payload, i + 6)[0] / _QA
+                    az = struct.unpack_from('<h', payload, i + 8)[0] / _QA
+                    self._lin_accel = (ax, ay, az)
+                    break
+                elif rid == _REPORT_STABILITY:
+                    # 6 bytes: id(1) seq(1) status(1) delay(1) classifier(1) reserved(1)
+                    if len(payload) < i + 5:
+                        break
+                    self._stability = payload[i + 4]
+                    break
+                else:
+                    break    # unrecognised sub-record in this packet
 
     def heading(self):
         """Return heading in degrees (0.0 – 360.0), relative to startup orientation."""
