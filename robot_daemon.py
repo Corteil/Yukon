@@ -594,6 +594,14 @@ class _YukonLink:
         """
         self._check_open()
         with self._cmd_lock:
+            # Flush any stale ACKs left by previously timed-out set_mode() calls.
+            # Holding _cmd_lock here means no other command is in flight, so any
+            # ACK already in the queue is genuinely orphaned and safe to discard.
+            while True:
+                try:
+                    self._ack_q.get_nowait()
+                except queue.Empty:
+                    break
             self._ser.write(self._encode(self.CMD_RC_QUERY, 0))
             self._drain(1, timeout=0.1)
         try:

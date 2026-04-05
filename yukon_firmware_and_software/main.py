@@ -571,15 +571,21 @@ try:
             _motor_sp[1] = 0.0
             _lock.release()
 
-        ready = select.select([sys.stdin], [], [], 0.01)
-        if ready[0]:
-            ch = sys.stdin.read(1)
-            b  = ord(ch)
+        # ── Serial byte processing ───────────────────────────────────────────
+        # Read bytes in a tight inner loop until one complete command is
+        # processed.  This processes a full 5-byte frame per 20 ms outer
+        # iteration instead of one byte, keeping up with the Pi's command
+        # rate and preventing ACK backlog.
+        for _nb in range(10):
+            _timeout = 0.01 if _nb == 0 else 0   # wait up to 10 ms for first byte
+            if not select.select([sys.stdin], [], [], _timeout)[0]:
+                break
+            b = ord(sys.stdin.read(1))
 
             # SYNC byte always resets framing regardless of current state
             if b == SYNC:
                 state = 'CMD'
-                continue
+                continue   # read next byte immediately within this inner loop
 
             if state == 'CMD':
                 if 0x21 <= b <= 0x2D:
@@ -621,7 +627,7 @@ try:
                         else:
                             _nak()
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_LEFT:
                         if _rc_mode == RC_AUTO:
@@ -657,7 +663,7 @@ try:
                             print("Sensor error:", se)
                             _nak()
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
                         # Bench module: optional — send 0 if not ready/enabled
                         try:
                             _send_data(RESP_BENCH_TEMP,  module_bench.read_temperature() * 3)
@@ -695,7 +701,7 @@ try:
                         else:
                             _nak()   # NAK: no IMU fitted
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_STRIP:
                         _pattern = 0
@@ -712,7 +718,7 @@ try:
                         else:
                             _nak()
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_PIXEL_SHOW:
                         module1.strip.update()
@@ -743,9 +749,10 @@ try:
                         else:
                             _nak()
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_RC_QUERY:
+                        _pi_last_cmd_ms      = ticks_ms()  # RC_QUERY also resets Pi watchdog
                         _pi_last_rc_query_ms = ticks_ms()
                         _lock.acquire()
                         ch    = list(_rc_channels)
@@ -764,7 +771,7 @@ try:
                             print("RC_QUERY error:", e)
                             _nak()
                             state = 'SYNC'
-                            continue
+                            break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_BENCH:
                         if value == 0:
@@ -777,6 +784,7 @@ try:
 
                     _ack()
                 state = 'SYNC'
+                break   # command complete — exit inner loop, run monitor_until_ms
 
         # ── Pattern animation ─────────────────────────────────────────────────
 
