@@ -281,9 +281,10 @@ class _YukonLink:
 
     def _reader(self):
         import serial as _serial
-        pkt   = []
-        in_pkt = False
-        s_buf  = []   # accumulate (resp_id, value) tuples for one sensor query
+        pkt      = []
+        in_pkt   = False
+        s_buf    = []   # accumulate (resp_id, value) tuples for one sensor query
+        txt_buf  = bytearray()  # collect printable bytes from Yukon firmware
 
         while not self._stop.is_set():
             try:
@@ -312,6 +313,9 @@ class _YukonLink:
                 self._ack_q.put(False)
 
             elif b == self.SYNC:
+                if txt_buf:
+                    log.debug("Yukon: %s", txt_buf.decode('ascii', errors='replace').rstrip())
+                    txt_buf = bytearray()
                 pkt    = [b]
                 in_pkt = True
 
@@ -328,6 +332,18 @@ class _YukonLink:
                         value   = ((v_high - 0x40) << 4) | (v_low - 0x50)
                         s_buf.append((resp_id, value))
                     pkt = []
+
+            elif 0x20 <= b <= 0x7E or b in (0x0A, 0x0D):
+                # Printable ASCII or newline — firmware print() output
+                if b in (0x0A, 0x0D):
+                    if txt_buf:
+                        log.warning("Yukon: %s", txt_buf.decode('ascii', errors='replace').rstrip())
+                        txt_buf = bytearray()
+                else:
+                    txt_buf.extend(bytes([b]))
+                    if len(txt_buf) > 200:   # guard against runaway accumulation
+                        log.warning("Yukon: %s", txt_buf.decode('ascii', errors='replace'))
+                        txt_buf = bytearray()
 
     @staticmethod
     def _parse_rc(packets) -> tuple:
