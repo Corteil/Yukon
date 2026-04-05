@@ -967,6 +967,15 @@ class _Camera:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         if not cap.isOpened():
             raise RuntimeError(f"{self._name}: cannot open {device!r}")
+        # Read back actual delivered resolution — driver may not honour the request.
+        # VideoWriter must match the actual frame size or writes are silently dropped.
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if actual_w > 0 and actual_h > 0 and (actual_w, actual_h) != (self._capture_w, self._capture_h):
+            log.warning(f"{self._name}: requested {self._capture_w}×{self._capture_h} "
+                        f"but got {actual_w}×{actual_h} — adjusting")
+            self._capture_w = actual_w
+            self._capture_h = actual_h
         self._ok = True
         log.info(f"{self._name}: OpenCV camera opened ({device}, "
                  f"{self._capture_w}×{self._capture_h} @ {self._fps} fps)")

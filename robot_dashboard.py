@@ -413,7 +413,8 @@ button:active{background:#2a2a42}
     <button class="btn-estop" onclick="sendCmd('estop')">ESTOP</button>
     <button class="btn-reset" id="btn-reset" onclick="sendCmd('reset')" style="display:none">Reset ESTOP</button>
     <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
-    <button onclick="sendCmd('record_toggle')" id="btn-rec" title="Toggle recording">⏺ REC</button>
+    <button onclick="sendCmd('record_start')" id="btn-rec" title="Start recording all cameras">⏺ REC</button>
+    <button onclick="sendCmd('record_stop')"  id="btn-rec-stop" title="Stop recording all cameras">⏹ REC</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
     <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle bench power output">⚡ BENCH</button>
     <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
@@ -1370,6 +1371,9 @@ function updateStatusBar(s) {
   const br=el('btn-rec');
   if(br){ br.style.color=s.cam_recording?C.red:C.gray;
           br.style.borderColor=s.cam_recording?C.red:C.border; }
+  const brs=el('btn-rec-stop');
+  if(brs){ brs.style.color=s.cam_recording?C.red:C.gray;
+           brs.style.borderColor=s.cam_recording?C.red:C.border; }
   const bd=el('btn-dlog');
   if(bd){ bd.style.color=s.data_logging?C.purple:C.gray;
           bd.style.borderColor=s.data_logging?C.purple:C.border; }
@@ -2191,6 +2195,8 @@ def api_cmd():
             _robot.stop_cam_recording(cam)
         else:
             _robot.start_cam_recording(cam)
+    elif cmd == 'record_start':
+        _robot.start_cam_recording(cam)
     elif cmd == 'record_stop':
         _robot.stop_cam_recording(cam)
     elif cmd == 'data_log_toggle':
