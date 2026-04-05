@@ -483,12 +483,12 @@ try:
     for motor in module5.motors:
         motor.enable()
 
-    # Bench module: must enable() before set_voltage() per SDK requirement,
-    # then disable() so the output stays off until CMD_BENCH(1) is received.
+    # Bench module: enable() must precede set_voltage() per SDK requirement.
+    # Keep output on at startup so monitor_until_ms() sees a healthy module;
+    # the Pi sends CMD_BENCH(0) immediately after connecting to disable it.
     module_bench.enable()
     sleep_ms(200)
     module_bench.set_voltage(BENCH_VOLTAGE)
-    module_bench.disable()
 
     sleep(0.1)   # let motor drivers settle before monitoring starts
 

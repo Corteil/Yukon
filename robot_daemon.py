@@ -2526,6 +2526,7 @@ class Robot:
                 while not self._stop_evt.is_set():
                     try:
                         link = _YukonLink(self._yukon_port, no_motors=self._no_motors)
+                        link.set_bench(False)   # bench enabled at startup — disable immediately
                         self._yukon = link
                         log.info("Yukon reconnected.")
                         return
