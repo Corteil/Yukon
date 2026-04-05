@@ -37,7 +37,7 @@ Suggested improvements based on codebase analysis, roughly ordered by priority.
 
 _Add your own tasks below._
 
-- [ ]
+- [ ] Dust cap detection
 - [ ]
 - [ ]
 - [ ]
