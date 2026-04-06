@@ -5,7 +5,7 @@
 | Component     | Detail |
 |---------------|--------|
 | Pimoroni Yukon | RP2040-based motor controller board |
-| PowerBench    | `BenchPowerModule` in SLOT4 (5 V regulated output; GPIO13=PWM6B) |
+| Dual Output   | `DualOutputModule` in SLOT4 — output 0 = FPV camera power |
 | Left motors   | `DualMotorModule` in SLOT2 |
 | Right motors  | `DualMotorModule` in SLOT5 |
 | RC receiver   | FlySky iBUS → Yukon GP26 (PIO UART, decoded by Yukon firmware) |

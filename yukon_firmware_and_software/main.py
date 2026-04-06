@@ -5,7 +5,7 @@ import select
 import random
 
 from pimoroni_yukon import Yukon, SLOT2, SLOT3, SLOT4, SLOT5
-from pimoroni_yukon.modules import BenchPowerModule, DualMotorModule, LEDStripModule
+from pimoroni_yukon.modules import DualOutputModule, DualMotorModule, LEDStripModule
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
                                    OverCurrentError, OverTemperatureError)
 import rp2
@@ -31,7 +31,6 @@ SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
 FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
 NUM_LEDS               = 8     # number of NeoPixels on the LED strip module
-BENCH_VOLTAGE          = 5.0  # Target output voltage in volts (set_voltage() is 1:1).
 
 # Bearing-hold proportional gain.
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
@@ -73,7 +72,7 @@ CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low n
                      #        patterns: 0=off, 1=larson, 2=random, 3=rainbow, 4=retro_computer, 5=converge
 CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
 CMD_RC_QUERY = 12  # value: ignored — replies with 14 channel packets + validity byte then ACK
-CMD_BENCH    = 13  # value: 0=disable bench power output, 1=enable bench power output
+CMD_BENCH    = 13  # value: 0=disable FPV camera output, 1=enable FPV camera output
 RESP_RC_BASE = 8   # response IDs 8-21 = channels 0-13; ID 22 = RC validity flag
 
 # CMD_SENSOR response IDs
@@ -90,8 +89,8 @@ RESP_PITCH       = 8   # IMU pitch  (nose up/down), encoded (pitch+90)*254/180, 
                        # Decode: pitch = value * 180/254 - 90  (-90deg..+90deg, ~0.7deg res)
 RESP_ROLL        = 9   # IMU roll   (side tilt),   encoded (roll+180)*254/360, 255=absent
                        # Decode: roll  = value * 360/254 - 180 (-180deg..+180deg, ~1.4deg res)
-RESP_BENCH_TEMP  = 10  # PowerBench module temp x 3 (e.g. 22.5 degC -> 67)
-RESP_BENCH_FAULT = 11  # PowerBench fault (0 or 1)
+RESP_BENCH_TEMP  = 10  # Dual Output module temp x 3 (e.g. 22.5 degC -> 67)
+RESP_BENCH_FAULT = 11  # Dual Output power-good fault (0 or 1)
 
 # ── Shared state (protected by _lock) ────────────────────────────────────────
 
@@ -115,7 +114,7 @@ _rc_channels          = [1500] * 14 # last valid iBUS channel values (µs, 1000-
 _rc_ts                = [0]         # [last_packet_ms] — mutable list avoids 'global' from core 1
 _pi_last_cmd_ms       = 0           # ticks_ms() of last CMD_MODE from Pi (0=never)
 _pi_last_rc_query_ms  = 0           # ticks_ms() of last CMD_RC_QUERY from Pi (0=never)
-_bench_enabled        = True        # tracks Pi CMD_BENCH state; True = bench on at startup
+_bench_enabled        = False       # tracks Pi CMD_BENCH state; False = FPV camera off at startup
 
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP
@@ -443,7 +442,7 @@ def motor_core(module_left, module_right,
 # ── Hardware setup ────────────────────────────────────────────────────────────
 
 yukon        = Yukon()
-module_bench = BenchPowerModule()             # regulated power output — SLOT4
+module_dual  = DualOutputModule()             # dual switched output — SLOT4
 module1      = LEDStripModule(LEDStripModule.NEOPIXEL, pio=0, sm=0, num_leds=NUM_LEDS)
 module2      = DualMotorModule()              # left motors  — SLOT2
 module5      = DualMotorModule()              # right motors — SLOT5
@@ -462,7 +461,7 @@ except Exception as e:
     print("IMU not available:", e)
 
 try:
-    yukon.register_with_slot(module_bench, SLOT4)
+    yukon.register_with_slot(module_dual,  SLOT4)
     yukon.register_with_slot(module1, SLOT3)
     yukon.register_with_slot(module2, SLOT2)
     yukon.register_with_slot(module5, SLOT5)
@@ -483,12 +482,8 @@ try:
     for motor in module5.motors:
         motor.enable()
 
-    # Bench module: enable() must precede set_voltage() per SDK requirement.
-    # Keep output on at startup so monitor_until_ms() sees a healthy module;
-    # the Pi sends CMD_BENCH(0) immediately after connecting to disable it.
-    module_bench.enable()
-    sleep_ms(200)
-    module_bench.set_voltage(BENCH_VOLTAGE)
+    # Dual output module: both outputs off at startup; Pi enables via CMD_BENCH.
+    module_dual.disable()
 
     sleep(0.1)   # let motor drivers settle before monitoring starts
 
@@ -664,10 +659,10 @@ try:
                             _nak()
                             state = 'SYNC'
                             break   # skip _ack(); exit inner loop
-                        # Bench module: optional — send 0 if not ready/enabled
+                        # Dual output module: optional — send 0 if not ready
                         try:
-                            _send_data(RESP_BENCH_TEMP,  module_bench.read_temperature() * 3)
-                            _send_data(RESP_BENCH_FAULT, int(not module_bench.read_power_good()))
+                            _send_data(RESP_BENCH_TEMP,  module_dual.read_temperature() * 3)
+                            _send_data(RESP_BENCH_FAULT, int(not module_dual.read_power_good1()))
                         except Exception:
                             _send_data(RESP_BENCH_TEMP,  0)
                             _send_data(RESP_BENCH_FAULT, 0)
@@ -774,11 +769,12 @@ try:
                     elif cmd_code == CMD_BENCH:
                         if value == 0:
                             _bench_enabled = False
-                            module_bench.disable()
+                            module_dual.outputs[0].value(False)
+                            module_dual.disable(0)
                         else:
                             _bench_enabled = True
-                            module_bench.enable()
-                            module_bench.set_voltage(BENCH_VOLTAGE)
+                            module_dual.enable(0)
+                            module_dual.outputs[0].value(True)
 
                     _ack()
                 state = 'SYNC'
@@ -843,11 +839,11 @@ try:
                 for motor in module5.motors:
                     motor.enable()
                 if _bench_enabled:
-                    module_bench.enable()
-                    sleep_ms(500)
-                    module_bench.set_voltage(BENCH_VOLTAGE)
+                    module_dual.enable(0)
+                    module_dual.outputs[0].value(True)
                 else:
-                    module_bench.disable()
+                    module_dual.outputs[0].value(False)
+                    module_dual.disable(0)
                 _pattern = 0
                 _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
@@ -866,10 +862,10 @@ try:
                 t  = yukon.read_temperature()
                 tL  = module2.read_temperature()
                 tR  = module5.read_temperature()
-                tBP = module_bench.read_temperature()
+                tBP = module_dual.read_temperature()
                 fL  = module2.read_fault()
                 fR  = module5.read_fault()
-                fBP = not module_bench.read_power_good()
+                fBP = not module_dual.read_power_good1()
                 _lock.acquire()
                 hdg = _current_heading
                 pit = _current_pitch

@@ -416,7 +416,7 @@ button:active{background:#2a2a42}
     <button onclick="sendCmd('record_start')" id="btn-rec" title="Start recording all cameras">⏺ REC</button>
     <button onclick="sendCmd('record_stop')"  id="btn-rec-stop" title="Stop recording all cameras">⏹ STOP</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
-    <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle bench power output">⚡ BENCH</button>
+    <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle FPV camera power">FPV Camera</button>
     <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
   </div>
 </div>
@@ -1379,7 +1379,7 @@ function updateStatusBar(s) {
           bd.style.borderColor=s.data_logging?C.purple:C.border; }
 
   const bBench=el('btn-bench');
-  if(bBench){ bBench.style.color=s.bench_enabled?C.green:C.gray;
+  if(bBench){ bBench.style.color=s.bench_enabled?C.green:C.white;
               bBench.style.borderColor=s.bench_enabled?C.green:C.border; }
 
   const bReset=el('btn-reset');

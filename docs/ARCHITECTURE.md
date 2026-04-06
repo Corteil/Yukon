@@ -23,7 +23,7 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
           │            │                  │                │
     Yukon RP2040   front_left/right    LD06 LiDAR    TAU1308 RTK
     main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
-   SLOT4: BenchPowerModule (5 V)   ArUco detection
+   SLOT4: DualOutputModule (out0=FPV camera)   ArUco detection
    SLOT2/SLOT5: DualMotorModule
    SLOT3: LEDStripModule
 ```

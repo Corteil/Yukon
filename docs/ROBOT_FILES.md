@@ -76,8 +76,8 @@ robot.start_cam_recording(cam='all') # cam: 'all' | 'front_left' | 'front_right'
 robot.stop_cam_recording(cam='all') # returns list of saved file paths
 robot.is_cam_recording(cam='any')   # cam='any' returns True if any camera is recording
 
-# Bench power (BenchPowerModule in SLOT1)
-robot.set_bench(on: bool)           # enable / disable 5 V regulated output
+# FPV camera power (DualOutputModule output 0 in SLOT4)
+robot.set_bench(on: bool)           # enable / disable FPV camera power output
 
 # Depth map (requires [depth] enabled = true in robot.ini)
 robot.get_depth_map() -> DepthMap                    # latest depth map snapshot

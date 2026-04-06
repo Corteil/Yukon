@@ -252,7 +252,7 @@ class _YukonLink:
                          #        patterns: 0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge
     CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
-    CMD_BENCH    = 13  # value: 0=disable bench power output, 1=enable
+    CMD_BENCH    = 13  # value: 0=disable FPV camera output, 1=enable
 
     RESP_IDS     = range(12)  # 0..11 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
@@ -2135,7 +2135,7 @@ class Robot:
         log.info("ESTOP cleared → MANUAL (re-engage AUTO switch to restart navigator)")
 
     def set_bench(self, on: bool):
-        """Enable or disable the bench power module output."""
+        """Enable or disable the FPV camera power output."""
         import serial as _serial
         self._bench_enabled = on
         if self._yukon:
@@ -2143,7 +2143,7 @@ class Robot:
                 self._yukon.set_bench(on)
             except (_serial.SerialException, OSError):
                 pass
-        log.info("Bench power %s", "ON" if on else "OFF")
+        log.info("FPV camera power %s", "ON" if on else "OFF")
 
     # ── drive API (autonomous mode) ──────────────────────────────────────────
 
