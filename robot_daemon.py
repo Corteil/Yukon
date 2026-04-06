@@ -217,8 +217,11 @@ class RobotState:
     nav_wp:      int         = 0      # GPS target waypoint index
     nav_wp_dist:     Optional[float] = None  # metres to current GPS waypoint
     nav_wp_bear:     Optional[float] = None  # bearing to current GPS waypoint
-    nav_bearing_err: Optional[float] = None  # ArUco navigator bearing error (degrees)
-    no_motors:       bool        = False  # drive commands suppressed
+    nav_bearing_err:    Optional[float] = None  # ArUco navigator bearing error (degrees)
+    nav_target_bearing: Optional[float] = None  # camera-relative aim bearing (° offset applied)
+    nav_target_dist:    Optional[float] = None  # metres to aim point
+    nav_tags_visible:   int             = 0     # ArUco tags in current camera frame
+    no_motors:          bool            = False  # drive commands suppressed
     bench_enabled:   bool        = True   # bench power output enabled (on at startup)
 
 
@@ -594,8 +597,6 @@ class _YukonLink:
     def set_mode(self, mode_val: int):
         """Send operating mode to Yukon (0=MANUAL, 1=AUTO, 2=ESTOP). Keeps Pi watchdog alive."""
         self._check_open()
-        if self._no_motors:
-            return
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_MODE, mode_val & 0xFF))
             self._drain(1)
@@ -2203,8 +2204,11 @@ class Robot:
             nav_wp          = self._gps_navigator.waypoint_index if self._gps_navigator else 0,
             nav_wp_dist     = self._gps_navigator.distance_to_wp if self._gps_navigator else None,
             nav_wp_bear     = self._gps_navigator.bearing_to_wp  if self._gps_navigator else None,
-            nav_bearing_err = self._navigator.bearing_err        if self._navigator     else None,
-            no_motors       = self._no_motors,
+            nav_bearing_err    = self._navigator.bearing_err        if self._navigator else None,
+            nav_target_bearing = self._navigator.target_bearing   if self._navigator else None,
+            nav_target_dist    = self._navigator.tag_dist          if self._navigator else None,
+            nav_tags_visible   = self._navigator.tags_visible      if self._navigator else 0,
+            no_motors          = self._no_motors,
             bench_enabled   = self._bench_enabled,
         )
 
@@ -2525,6 +2529,16 @@ class Robot:
         with self._mode_lock:
             return self._auto_type
 
+    def set_no_motors(self, on: bool):
+        """Enable or disable no-motors mode (suppresses drive commands only).
+
+        Unlike the startup --no-motors flag, this does NOT suppress CMD_MODE so
+        the Yukon watchdog heartbeat keeps running and the board stays connected.
+        Only CMD_LEFT/CMD_RIGHT (AUTO drive) are blocked.
+        """
+        self._no_motors = on
+        log.info("No-motors mode %s", "ON" if on else "OFF")
+
     def bookmark_gps(self):
         """Insert a bookmark row into the active GPS log (no-op if not logging)."""
         if self._gps_logging:
@@ -2703,10 +2717,14 @@ class Robot:
             yukon = self._yukon   # snapshot — reconnect thread may set self._yukon=None
             if yukon:
                 try:
-                    # CMD_MODE heartbeat — keeps Yukon Pi-watchdog alive
+                    # CMD_MODE heartbeat — keeps Yukon Pi-watchdog alive.
+                    # Force ESTOP on Yukon when no-motors active so firmware
+                    # stops RC-driven motors in MANUAL mode too.
                     _yukon_mode = {RobotMode.MANUAL: 0,
                                    RobotMode.AUTO:   1,
                                    RobotMode.ESTOP:  2}.get(mode, 0)
+                    if self._no_motors:
+                        _yukon_mode = 2
                     yukon.set_mode(_yukon_mode)
 
                     # LED A: on = AUTO, off = MANUAL/ESTOP
@@ -2872,7 +2890,7 @@ class Robot:
             right              = right * scale
 
             # Send drive commands only in AUTO mode (MANUAL is handled on Yukon)
-            if mode is RobotMode.AUTO and self._yukon:
+            if mode is RobotMode.AUTO and self._yukon and not self._no_motors:
                 left_b  = round(left  * 100)
                 right_b = round(right * 100)
                 if left_b != last_left or right_b != last_right:

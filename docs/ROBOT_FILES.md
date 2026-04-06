@@ -30,7 +30,7 @@ flag is omitted.
 | `--no-camera` | off | Disable camera subsystem |
 | `--no-lidar` | off | Disable LiDAR subsystem |
 | `--no-gps` | off | Disable GPS subsystem |
-| `--no-motors` | off | Suppress all motor commands (bench-test mode). RC speed data is still read and shown in the dashboard. The Yukon firmware detects this mode by receiving `CMD_RC_QUERY` without any `CMD_MODE` heartbeat. |
+| `--no-motors` | off | Suppress drive commands at startup (bench-test mode). RC speed data is still read. The Yukon receives `CMD_MODE=ESTOP` each heartbeat tick so motors stop in all modes. Can also be toggled at runtime via the **No Motors** button in the dashboard status bar. |
 
 ---
 
@@ -78,6 +78,10 @@ robot.is_cam_recording(cam='any')   # cam='any' returns True if any camera is re
 
 # FPV camera power (DualOutputModule output 0 in SLOT4)
 robot.set_bench(on: bool)           # enable / disable FPV camera power output
+
+# No-motors mode (runtime toggle — also set by --no-motors at startup)
+robot.set_no_motors(on: bool)       # suppress drive commands; Yukon receives CMD_MODE=ESTOP
+                                    # so motors stop in MANUAL (RC-driven) and AUTO modes
 
 # Depth map (requires [depth] enabled = true in robot.ini)
 robot.get_depth_map() -> DepthMap                    # latest depth map snapshot
@@ -192,15 +196,19 @@ The 2×2 panel layout is configurable via `[layout_presets]` in `robot.ini`.  Do
 - Bearing button (level 2): additionally shows bearing lines, distance labels, boresight crosshair, and IMU arc
 
 **Features**
-- Real-time telemetry via Server-Sent Events
+- Real-time telemetry via Server-Sent Events (10 Hz)
 - MJPEG camera streams for all three cameras
 - LiDAR polar plot
+- Navigation quad panel — overhead radar with gates, tags, target bearing line, and aim-point distance/bearing readout
 - ESTOP / Reset controls
 - ArUco toggle and bearing overlay toggle (per camera)
+- **No Motors** toggle button — suppresses drive commands and forces Yukon ESTOP so motors stop in both MANUAL (RC-driven) and AUTO modes; button glows orange when active
 - No-motors warning banner
 - GPS logging badge
 - Camera recording and ML data logging buttons
+- FPV camera power toggle
 - Terminal log panel with filter bar and auto-scroll
+- Configurable layout presets (Race / Setup / Nav etc.) via `[layout_presets]` in `robot.ini`
 
 ```bash
 python3 robot_dashboard.py              # 0.0.0.0:5000
@@ -434,8 +442,13 @@ Shared constants, helpers, and utilities used by both `camera_monitor.py` and `c
 #### robot/aruco_detector.py
 
 OpenCV ArUco marker detector.  Detects markers in RGB camera frames, identifies
-gate pairs (consecutive odd/even tag IDs: tags 1+2 = gate 0, tags 3+4 = gate 1,
-…), and optionally estimates metric distance and bearing via `cv2.solvePnP`.
+gate pairs, and optionally estimates metric distance and bearing via `cv2.solvePnP`.
+
+**Gate and tag numbering convention:**
+- Gate N has two posts: **outside** post (tag ID `2N`, even) and **inside** post (tag ID `2N+1`, odd)
+- **Front face** tags: IDs 0–99 (robot approaching)
+- **Rear face** tags: IDs 100–199 (rear = front + 100; seeing a rear tag means the gate has already been passed)
+- Single-tag navigation: aim **right** of an outside (even) tag, **left** of an inside (odd) tag
 
 Pose estimation requires a calibration file (`camera_cal.npz`) produced by
 `tools/calibrate_camera.py` at the same resolution the camera runs at.
@@ -461,6 +474,19 @@ with `RECOVERING` when a gate is lost mid-approach.
 - `APPROACHING` — drives forward while holding alignment; LiDAR obstacle-stop active
 - `PASSING` — straight-line burst through the gate at locked IMU heading (`pass_distance` trigger); LiDAR obstacle-stop active
 - `RECOVERING` — gate lost while approaching; reverses briefly then returns to SEARCHING
+
+When only one post of a gate is visible, the navigator aims offset left/right of the visible tag (see gate numbering convention above). The aim offset scales with apparent tag pixel area so it stays consistent as the robot approaches.
+
+Diagnostic attributes (readable on the navigator instance):
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `target_bearing` | `float \| None` | Camera-relative bearing to the aim point (degrees) |
+| `tag_dist` | `float \| None` | Estimated metric distance to the target tag |
+| `tags_visible` | `int` | Number of ArUco tags visible in the current frame |
+| `bearing_err` | `float \| None` | Signed bearing error (positive = target right of centre) |
+
+These are exposed in `RobotState` as `nav_target_bearing`, `nav_target_dist`, and `nav_tags_visible`.
 
 Requires ArUco detection + optionally the BNO085 IMU (via Yukon telemetry) for
 heading hold between camera frames.

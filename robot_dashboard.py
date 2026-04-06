@@ -28,6 +28,7 @@ import configparser
 import io
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -88,6 +89,45 @@ _jpeg_encode = None
 
 # ── State serialiser ──────────────────────────────────────────────────────────
 
+def _nav_aim_bearing(aruco_state, gate_id: int, cap_w: int):
+    """Compute camera-relative aim bearing (°) for *gate_id* from *aruco_state*.
+
+    Mirrors ArucoNavigator._resolve_target so the nav panel shows the correct
+    aim direction even when the navigator is not active (e.g. MANUAL mode).
+
+    Gate N: outside post = tag 2N (even), inside post = tag 2N+1 (odd).
+    Single-tag offset: inside → aim LEFT (subtract pixels), outside → aim RIGHT.
+    Returns None when no relevant front-face tag or gate is visible.
+    """
+    if aruco_state is None:
+        return None
+    frame_cx = (cap_w // 2) if cap_w else 320
+
+    def _pixel_bear(px: int) -> float:
+        return ((px - frame_cx) / max(frame_cx, 1)) * 31.0  # ±31° for 62° HFOV
+
+    # Full gate visible — aim at gate centre
+    gate = aruco_state.gates.get(gate_id)
+    if gate is not None:
+        return gate.bearing if gate.bearing is not None else _pixel_bear(gate.centre_x)
+
+    # Single front-face tag (ID 0–99)
+    base_outside = gate_id * 2
+    base_inside  = gate_id * 2 + 1
+    tag = aruco_state.tags.get(base_outside) or aruco_state.tags.get(base_inside)
+    if tag is None or tag.id >= 100:
+        return None
+
+    is_inside  = tag.id % 2 == 1
+    offset_px  = int(5000 / math.sqrt(tag.area)) if tag.area > 0 else 80
+    aim_x      = tag.center_x + (-offset_px if is_inside else offset_px)
+
+    if tag.bearing is not None:
+        lateral = (aim_x - tag.center_x) / max(frame_cx, 1)
+        return tag.bearing + math.degrees(math.atan(lateral))
+    return _pixel_bear(aim_x)
+
+
 def _aruco_info(aruco_state, cap_w=0, cap_h=0):
     """Serialise a single ArUcoState to a JSON-safe dict.
 
@@ -110,7 +150,8 @@ def _aruco_info(aruco_state, cap_w=0, cap_h=0):
         'gates': [
             {'gate_id': gx.gate_id, 'centre_x': gx.centre_x,
              'centre_y': gx.centre_y, 'bearing': gx.bearing,
-             'distance': gx.distance, 'correct_dir': gx.correct_dir}
+             'distance': gx.distance, 'correct_dir': gx.correct_dir,
+             'outside_tag': gx.outside_tag, 'inside_tag': gx.inside_tag}
             for gx in aruco_state.gates.values()
         ],
     }
@@ -127,10 +168,28 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
 
     # Per-camera ArUco info — only include when that camera's detection is enabled
     aruco_info = {}
+    # Native capture sizes — always emit even when ArUco is disabled so JS has
+    # the correct pixel reference for bearing / offset calculations.
+    cam_cap_w = {}
+    cam_cap_h = {}
     if aruco_states:
         for cam_name, (aruco_state, cap_w, cap_h) in aruco_states.items():
+            if cap_w:
+                cam_cap_w[cam_name] = cap_w
+            if cap_h:
+                cam_cap_h[cam_name] = cap_h
             if aruco_enabled.get(cam_name) and aruco_state is not None:
                 aruco_info[cam_name] = _aruco_info(aruco_state, cap_w, cap_h)
+
+    # nav_target_bearing: use navigator's computed value when available,
+    # otherwise derive from the current front-left aruco state so the nav
+    # panel shows the aim direction even when not in AUTO mode.
+    nav_target_bearing = state.nav_target_bearing
+    if nav_target_bearing is None and aruco_states:
+        fl = aruco_states.get('front_left')
+        if fl:
+            fl_aruco, fl_cap_w, _ = fl
+            nav_target_bearing = _nav_aim_bearing(fl_aruco, state.nav_gate, fl_cap_w)
 
     return {
         'mode':          state.mode.name,
@@ -148,13 +207,19 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         'data_logging':  state.data_logging,
         'no_motors':     state.no_motors,
         'bench_enabled': state.bench_enabled,
-        'nav_state':     state.nav_state,
-        'nav_gate':      state.nav_gate,
-        'nav_bearing_err': nav_bearing_err,
-        'nav_wp':        state.nav_wp,
-        'nav_wp_dist':   state.nav_wp_dist,
-        'nav_wp_bear':   state.nav_wp_bear,
+        'nav_state':          state.nav_state,
+        'nav_gate':           state.nav_gate,
+        'nav_bearing_err':    nav_bearing_err,
+        'nav_target_bearing': nav_target_bearing,
+        'nav_target_dist':    state.nav_target_dist,
+        'nav_tags_visible':   state.nav_tags_visible,
+        'nav_wp':             state.nav_wp,
+        'nav_wp_dist':        state.nav_wp_dist,
+        'nav_wp_bear':        state.nav_wp_bear,
         'aruco':         aruco_info,   # dict keyed by camera name
+        # Native capture resolutions — always present, independent of ArUco state
+        'cam_cap_w':     cam_cap_w,   # {cam_name: width}  e.g. {'front_left': 1456}
+        'cam_cap_h':     cam_cap_h,   # {cam_name: height}
         # Per-camera status
         'cam_fl_ok':  state.cam_front_left_ok,
         'cam_fr_ok':  state.cam_front_right_ok,
@@ -250,6 +315,7 @@ button:active{background:#2a2a42}
 .btn-estop{border-color:var(--red)!important;color:var(--red)!important}
 .btn-reset{border-color:var(--green)!important;color:var(--green)!important}
 .btn-mode{border-color:var(--yellow);color:var(--yellow)}
+.btn-no-motors-active{border-color:#ff8c00!important;color:#ff8c00!important;background:#2a1a00!important}
 .btn-preset{font-size:11px;padding:2px 7px;color:var(--gray)}
 .btn-preset.active{color:var(--cyan);border-color:var(--cyan)}
 @keyframes blink{50%{opacity:.25}}
@@ -360,6 +426,17 @@ button:active{background:#2a2a42}
 /* Lidar */
 .lidar-canvas{display:block;width:100%;flex:1}
 
+/* Nav panel */
+.nav-canvas-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:4px}
+.nav-canvas{display:block;width:100%;flex:1;min-height:0}
+.nav-status{display:flex;align-items:center;gap:8px;padding:3px 8px;flex-shrink:0;font-size:11px}
+.nav-state-badge{font-weight:bold;padding:2px 7px;border-radius:3px;font-size:11px}
+.nav-rows{flex-shrink:0;padding:2px 8px}
+.nav-row{display:flex;align-items:center;gap:6px;padding:1px 0;font-size:11px}
+.nav-row label{color:var(--gray);width:60px;flex-shrink:0}
+.nav-berr-bar{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.nav-berr-fill{height:100%;background:var(--cyan);border-radius:3px;transition:width .1s,margin-left .1s}
+
 /* ── Panel chooser overlay ── */
 #chooser{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
   z-index:300;align-items:center;justify-content:center}
@@ -417,6 +494,7 @@ button:active{background:#2a2a42}
     <button onclick="sendCmd('record_stop')"  id="btn-rec-stop" title="Stop recording all cameras">⏹ STOP</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
     <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle FPV camera power">FPV Camera</button>
+    <button onclick="sendCmd('no_motors_toggle')" id="btn-no-motors" title="Toggle no-motors mode (suppress drive commands)">No Motors</button>
     <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
   </div>
 </div>
@@ -629,6 +707,7 @@ const PANEL_DEFS = [
   { type:'system',             label:'System'       },
   { type:'logs',               label:'Logs'         },
   { type:'terminal',           label:'Terminal'     },
+  { type:'nav',                label:'Navigation'   },
 ];
 
 // Default layout — overridden by preset buttons
@@ -788,6 +867,31 @@ function htmlSystem(i) {
 function htmlLidar(i) {
   return `<canvas id="q${i}-lidar-canvas" class="lidar-canvas"></canvas>`;
 }
+function htmlNav(i) {
+  return `
+    <div class="nav-status">
+      <span class="nav-state-badge" id="q${i}-nav-state-badge">IDLE</span>
+      <span id="q${i}-nav-gate-lbl" style="color:var(--gray)">--</span>
+    </div>
+    <div class="nav-rows">
+      <div class="nav-row"><label>Bearing err</label>
+        <div class="nav-berr-bar"><div class="nav-berr-fill" id="q${i}-berr-fill" style="width:0;margin-left:50%"></div></div>
+        <span id="q${i}-berr-val" style="color:var(--gray);width:44px;text-align:right">--</span>
+      </div>
+      <div class="nav-row"><label>Target bear</label>
+        <span id="q${i}-target-bear" style="color:var(--cyan)">--</span>
+      </div>
+      <div class="nav-row"><label>Gate dist</label>
+        <span id="q${i}-gate-dist" style="color:var(--cyan)">--</span>
+      </div>
+      <div class="nav-row"><label>Tags visible</label>
+        <span id="q${i}-tags-visible" style="color:var(--gray)">--</span>
+      </div>
+    </div>
+    <div class="nav-canvas-wrap">
+      <canvas class="nav-canvas" id="q${i}-nav-canvas"></canvas>
+    </div>`;
+}
 function htmlLogs(i) {
   return `
     <div class="log-toolbar">
@@ -841,6 +945,7 @@ function renderQuad(i) {
   else if (kind === 'lidar')    html = htmlLidar(i);
   else if (kind === 'logs')     html = htmlLogs(i);
   else if (kind === 'terminal') html = htmlTerminal(i);
+  else if (kind === 'nav')      html = htmlNav(i);
   body.innerHTML = html;
 
   if (kind === 'lidar') resizeLidar(`q${i}-lidar-canvas`);
@@ -1221,6 +1326,264 @@ function updateLidarPanel(i, s) {
   drawLidar(c, s.lidar.angles, s.lidar.distances);
 }
 
+// ── Navigation panel ──────────────────────────────────────────────────────────
+function updateNavPanel(i, s) {
+  const nc = NAV_COLORS[s.nav_state] || C.gray;
+
+  // State badge
+  const badge = el(`q${i}-nav-state-badge`);
+  if (badge) { badge.textContent = s.nav_state || 'IDLE'; badge.style.background = nc + '33'; badge.style.color = nc; }
+
+  // Gate label
+  const gateLbl = el(`q${i}-nav-gate-lbl`);
+  if (gateLbl) {
+    const autoGps = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
+    if (autoGps) gateLbl.textContent = `WP ${s.nav_wp}`;
+    else gateLbl.textContent = `Gate ${s.nav_gate}`;
+    gateLbl.style.color = C.gray;
+  }
+
+  // Bearing error bar
+  const berrFill = el(`q${i}-berr-fill`);
+  const berrVal  = el(`q${i}-berr-val`);
+  const berr = s.nav_bearing_err;
+  if (berrFill && berr != null) {
+    const pct = Math.min(Math.abs(berr) / 45.0, 1.0) * 50;  // 0–50% of bar half
+    const col = Math.abs(berr) < 5 ? C.green : Math.abs(berr) < 15 ? C.yellow : C.orange;
+    berrFill.style.background = col;
+    if (berr >= 0) { berrFill.style.marginLeft = '50%'; berrFill.style.width = pct + '%'; }
+    else            { berrFill.style.marginLeft = (50 - pct) + '%'; berrFill.style.width = pct + '%'; }
+  } else if (berrFill) { berrFill.style.width = '0'; berrFill.style.marginLeft = '50%'; }
+  if (berrVal) { berrVal.textContent = berr != null ? (berr >= 0 ? '+' : '') + berr.toFixed(1) + '°' : '--'; berrVal.style.color = berr != null ? C.cyan : C.gray; }
+
+  // Target bearing — computed by navigator (aim point offset already applied)
+  const bearEl = el(`q${i}-target-bear`);
+  if (bearEl) {
+    const autoGps   = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
+    const bear      = autoGps ? s.nav_wp_bear : s.nav_target_bearing;
+    bearEl.textContent = bear != null
+      ? (bear >= 0 ? '+' : '') + bear.toFixed(1) + '°'
+      : '--';
+    bearEl.style.color = bear != null ? C.cyan : C.gray;
+  }
+
+  // Gate / aim-point distance
+  const distEl = el(`q${i}-gate-dist`);
+  if (distEl) {
+    const dist = s.nav_target_dist;
+    distEl.textContent = dist != null ? dist.toFixed(2) + ' m' : '--';
+    distEl.style.color = dist != null ? C.cyan : C.gray;
+  }
+
+  // Tags visible
+  const tagsEl = el(`q${i}-tags-visible`);
+  if (tagsEl) {
+    const n = s.nav_tags_visible || 0;
+    tagsEl.textContent = n;
+    tagsEl.style.color = n ? C.cyan : C.gray;
+  }
+
+  // Canvas radar view
+  const c = el(`q${i}-nav-canvas`); if (!c) return;
+  if (_syncCanvasSize(c)) drawNavCanvas(c, s);
+}
+
+function drawNavCanvas(canvas, s) {
+  const W = canvas.width, H = canvas.height;
+  if (!W || !H) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  const cx = W / 2, cy = H / 2;
+  const maxR = Math.min(W, H) / 2 - 18;
+
+  // Range rings — auto-scale to furthest visible gate
+  const camAruco = s.aruco && s.aruco['front_left'] ? s.aruco['front_left'] : null;
+  const allGates = camAruco ? camAruco.gates : [];
+  const allTags  = camAruco ? camAruco.tags  : [];
+  const maxDist = allGates.reduce((m, g) => g.distance != null ? Math.max(m, g.distance) : m,
+                  allTags.reduce ((m, t) => t.distance != null ? Math.max(m, t.distance) : m, 2.0));
+  const scale = maxR / Math.max(maxDist, 0.5);  // px per metre
+
+  // Draw rings
+  const ringDistances = [0.5, 1, 2, 3, 5, 8];
+  ctx.strokeStyle = '#2a2a40'; ctx.lineWidth = 1;
+  for (const d of ringDistances) {
+    const r = d * scale;
+    if (r > maxR + 2) break;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillStyle = '#444'; ctx.font = '8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(d + 'm', cx, cy - r + 9);
+  }
+  // Outer boundary
+  ctx.strokeStyle = '#3c3c5a'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, maxR, 0, 2 * Math.PI); ctx.stroke();
+
+  // Cardinal spokes (faint)
+  ctx.strokeStyle = '#2a2a40'; ctx.lineWidth = 0.5;
+  for (let a = 0; a < 360; a += 45) {
+    const rad = (a - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + maxR * Math.cos(rad), cy + maxR * Math.sin(rad)); ctx.stroke();
+  }
+
+  // Forward indicator (up = robot forward)
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx, cy - maxR - 2); ctx.lineTo(cx, cy - maxR + 10); ctx.stroke();
+  ctx.fillStyle = '#555'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('FWD', cx, cy - maxR - 4);
+
+  // Helpers: estimate bearing/distance when pose data unavailable
+  const nativeW = s.cam_cap_w && s.cam_cap_w['front_left'];
+  const capW = (camAruco && camAruco.cap_w) || nativeW || 640;
+  const HFOV_HALF = 31;  // degrees — half of ~62° IMX296 HFOV
+  const UNKNOWN_R = maxR * 0.65;  // radius used when distance is unknown
+  const _bearing = (pxBearing, pxCx) =>
+    pxBearing != null ? pxBearing : ((pxCx - capW / 2) / (capW / 2)) * HFOV_HALF;
+  const _radius  = dist => dist != null ? Math.min(dist * scale, maxR) : UNKNOWN_R;
+
+  // Draw individual tags (not part of a gate) as small dots
+  const navGate = s.nav_gate || 0;
+  // Gate N: outside front tag = 2N (even), inside front tag = 2N+1 (odd)
+  // Rear tags (≥100) mean the gate has been passed
+  const isTargetTag = id => id < 100 && (id === navGate*2 || id === navGate*2+1);
+  const gateTagIds = new Set(allGates.flatMap(g => [g.gate_id*2, g.gate_id*2+1, g.gate_id*2+100, g.gate_id*2+101]));
+
+  for (const tag of allTags) {
+    if (gateTagIds.has(tag.id)) continue;  // shown as part of gate below
+    const bearing = _bearing(tag.bearing, tag.cx);
+    const rad = (bearing - 90) * Math.PI / 180;
+    const r   = _radius(tag.distance);
+    const tx  = cx + r * Math.cos(rad);
+    const ty  = cy + r * Math.sin(rad);
+    const isPassed   = tag.id >= 100;
+    const distKnown  = tag.distance != null;
+    const col = isPassed ? C.gray : isTargetTag(tag.id) ? C.cyan : C.yellow;
+    ctx.globalAlpha = distKnown ? 1.0 : 0.55;
+    ctx.beginPath(); ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = col + '99'; ctx.fill();
+    ctx.strokeStyle = col; ctx.lineWidth = distKnown ? 1.5 : 1;
+    if (!distKnown) ctx.setLineDash([3, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = col; ctx.font = '9px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('#' + tag.id + (distKnown ? '' : '?'), tx + 6, ty + 4);
+  }
+
+  // Draw gates — two posts + centre line
+  // A gate formed from rear tags (outside_tag ≥ 100) means it has been passed
+  for (const gate of allGates) {
+    const isPassed = gate.outside_tag != null && gate.outside_tag >= 100;
+    const isTarget = gate.gate_id === navGate && !isPassed;
+    const col = isPassed ? C.gray : isTarget ? C.cyan : C.yellow;
+    const bearing = _bearing(gate.bearing, gate.centre_x);
+    const rad = (bearing - 90) * Math.PI / 180;
+    const r   = _radius(gate.distance);
+    const distKnown = gate.distance != null;
+    const gx  = cx + r * Math.cos(rad);
+    const gy  = cy + r * Math.sin(rad);
+
+    // Gate posts — draw as a perpendicular bar at that range
+    const perpRad = rad + Math.PI / 2;
+    const halfW   = 14;  // half-width of gate bar in px
+    const lx = gx + halfW * Math.cos(perpRad);
+    const ly = gy + halfW * Math.sin(perpRad);
+    const rx = gx - halfW * Math.cos(perpRad);
+    const ry = gy - halfW * Math.sin(perpRad);
+
+    // Post dots (dashed outline when distance unknown)
+    ctx.globalAlpha = distKnown ? 1.0 : 0.55;
+    if (!distKnown) ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = col + 'bb'; ctx.fill();
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
+    ctx.beginPath(); ctx.arc(rx, ry, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = col + 'bb'; ctx.fill();
+    ctx.strokeStyle = col; ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Bar between posts
+    ctx.strokeStyle = col; ctx.lineWidth = isTarget ? 2.5 : 1.5;
+    ctx.globalAlpha = distKnown ? (isTarget ? 0.9 : 0.5) : 0.35;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(rx, ry); ctx.stroke();
+    ctx.globalAlpha = 1.0;
+
+    // Aim line from robot to gate centre (target only)
+    if (isTarget) {
+      ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(gx, gy); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1.0;
+    }
+
+    // Gate label
+    ctx.fillStyle = col; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+    const lbl = 'G' + gate.gate_id + (distKnown ? ' ' + gate.distance.toFixed(1) + 'm' : '?');
+    ctx.fillText(lbl, gx, gy - 10);
+  }
+
+  // Target bearing line — pre-computed by navigator (aim offset already applied)
+  {
+    const autoGps  = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
+    const targetBear = autoGps ? s.nav_wp_bear : s.nav_target_bearing;
+    if (targetBear != null) {
+      const tRad = (targetBear - 90) * Math.PI / 180;
+      const col  = C.cyan;
+      // Line from centre to radar edge
+      ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.globalAlpha = 0.75;
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + maxR * Math.cos(tRad), cy + maxR * Math.sin(tRad));
+      ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1.0;
+      // Small arrowhead at the edge
+      const ex = cx + maxR * Math.cos(tRad), ey = cy + maxR * Math.sin(tRad);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - 7 * Math.cos(tRad - 0.4), ey - 7 * Math.sin(tRad - 0.4));
+      ctx.lineTo(ex - 7 * Math.cos(tRad + 0.4), ey - 7 * Math.sin(tRad + 0.4));
+      ctx.closePath(); ctx.fill();
+      // Bearing label just outside the edge
+      ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = col;
+      const lx2 = cx + (maxR + 12) * Math.cos(tRad);
+      const ly2 = cy + (maxR + 12) * Math.sin(tRad) + 3;
+      ctx.fillText((targetBear >= 0 ? '+' : '') + targetBear.toFixed(0) + '°', lx2, ly2);
+    }
+  }
+
+  // Robot triangle at centre
+  const robotSize = 9;
+  ctx.fillStyle = C.green; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - robotSize);           // nose
+  ctx.lineTo(cx - robotSize * 0.7, cy + robotSize * 0.7);
+  ctx.lineTo(cx + robotSize * 0.7, cy + robotSize * 0.7);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // IMU heading arrow (if available)
+  const heading = s.telemetry && s.telemetry.heading;
+  if (heading != null) {
+    const hRad = (heading - 90) * Math.PI / 180;
+    const hLen = 22;
+    ctx.strokeStyle = C.red; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + hLen * Math.cos(hRad), cy + hLen * Math.sin(hRad)); ctx.stroke();
+    // Arrowhead
+    const arrowSize = 5;
+    const ax = cx + hLen * Math.cos(hRad);
+    const ay = cy + hLen * Math.sin(hRad);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - arrowSize * Math.cos(hRad - 0.4), ay - arrowSize * Math.sin(hRad - 0.4));
+    ctx.lineTo(ax - arrowSize * Math.cos(hRad + 0.4), ay - arrowSize * Math.sin(hRad + 0.4));
+    ctx.closePath(); ctx.fillStyle = C.red; ctx.fill();
+    // N label
+    ctx.font = '9px monospace'; ctx.fillStyle = C.red; ctx.textAlign = 'center';
+    ctx.fillText('N', cx + (hLen + 10) * Math.cos(hRad), cy + (hLen + 10) * Math.sin(hRad) + 3);
+  }
+}
+
 // ── Shared nav helpers ────────────────────────────────────────────────────────
 function updateNavBadgeEl(badge, s) {
   const autoCamera = s.mode==='AUTO' && (s.auto_type==='Camera'||s.auto_type==='Cam+GPS');
@@ -1264,6 +1627,7 @@ function updateAllQuads(s) {
     else if (kind==='system')    updateSystemPanel(i, s);
     else if (kind==='lidar')     updateLidarPanel(i, s);
     else if (kind==='terminal')  updateTerminalPanel(i, s);
+    else if (kind==='nav')       updateNavPanel(i, s);
     // logs: updated by polling, not state
   }
 }
@@ -1381,6 +1745,9 @@ function updateStatusBar(s) {
   const bBench=el('btn-bench');
   if(bBench){ bBench.style.color=s.bench_enabled?C.green:C.white;
               bBench.style.borderColor=s.bench_enabled?C.green:C.border; }
+
+  const bNoMotors=el('btn-no-motors');
+  if(bNoMotors){ bNoMotors.classList.toggle('btn-no-motors-active', !!s.no_motors); }
 
   const bReset=el('btn-reset');
   if(bReset){
@@ -1700,12 +2067,15 @@ function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=fal
   const fcx = ox + rW / 2;
   const fcy = oy + rH / 2;
 
-  const targetOdd=navGate*2+1, targetEven=navGate*2+2;
+  // Gate N: outside front tag=2N (even), inside front tag=2N+1 (odd)
+  // Rear tags (≥100) mean the gate has been passed — show dimmed, not as target
+  const _isNavTarget = id => id < 100 && (id === navGate*2 || id === navGate*2+1);
   ctx.font='bold 10px monospace'; ctx.lineWidth=1.5;
   for (const tag of aruco.tags) {
     const tx=ox+tag.cx*csx, ty=oy+tag.cy*csy;
-    const isTarget=tag.id===targetOdd||tag.id===targetEven;
-    const color=isTarget?C.cyan:C.yellow;
+    const isPassed = tag.id >= 100;
+    const isTarget=_isNavTarget(tag.id);
+    const color=isPassed?C.gray:isTarget?C.cyan:C.yellow;
     // Bounding box from corners (always shown when ArUco active)
     if (tag.corners && tag.corners.length===4) {
       ctx.strokeStyle=color; ctx.lineWidth=2; ctx.globalAlpha=0.9;
@@ -1871,6 +2241,7 @@ const PRESET_MAP = {
 };
 const PRESETS_DEFAULT = {
   Race:  ['camera:front_left','camera:front_right','camera:rear','lidar'],
+  Nav:   ['camera:front_left','camera:front_right','nav','lidar'],
   Setup: ['camera:front_left','camera:front_right','gps','telemetry'],
   Debug: ['lidar','camera:front_left','telemetry','logs'],
 };
@@ -2206,6 +2577,8 @@ def api_cmd():
             _robot.start_data_log()
     elif cmd == 'bench_toggle':
         _robot.set_bench(not _robot.get_state().bench_enabled)
+    elif cmd == 'no_motors_toggle':
+        _robot.set_no_motors(not _robot.get_state().no_motors)
     elif cmd == 'set_mode':
         mode = body.get('mode', '')
         if   mode == 'MANUAL': _robot.set_mode(RobotMode.MANUAL)

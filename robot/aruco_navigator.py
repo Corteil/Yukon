@@ -52,8 +52,19 @@ Gate sequencing
 
 Single-tag fallback
 -------------------
-  Odd tag  (left post)  → aim RIGHT:  target_x = tag.center_x + offset
-  Even tag (right post) → aim LEFT:   target_x = tag.center_x − offset
+Tag IDs follow this convention:
+  Base ID = tag_id % 100 (strips front/rear distinction; front = 0–99, rear = 100–199)
+  Even base ID → OUTSIDE post (right side on correct approach) → aim RIGHT of tag
+  Odd  base ID → INSIDE  post (left  side on correct approach) → aim LEFT  of tag
+
+Gate N consists of outside post (base 2N) and inside post (base 2N+1):
+  Gate 0 → base IDs 0 (outside) + 1 (inside)
+  Gate 1 → base IDs 2 (outside) + 3 (inside)
+
+When searching for a gate the navigator accepts either front (0–99) or rear
+(100–199) variants of each post tag so the robot can locate the gate even when
+approaching from behind.
+
   offset = TAG_OFFSET_K / distance_m  (calibrated)
          = PIXEL_OFFSET_K / sqrt(area) (pixel fallback)
 """
@@ -192,11 +203,15 @@ class ArucoNavigator:
         self._cur_left  = 0.0
         self._cur_right = 0.0
 
-        # Diagnostics — readable by robot_gui.py
-        self.target_x:    Optional[int]   = None
-        self.bearing_err: Optional[float] = None
-        self.tag_dist:    Optional[float] = None
-        self.imu_heading: Optional[float] = None
+        # Diagnostics — readable by robot_gui.py / robot_daemon.py
+        self.target_x:       Optional[int]   = None
+        self.bearing_err:    Optional[float] = None
+        self.tag_dist:       Optional[float] = None
+        self.imu_heading:    Optional[float] = None
+        # Aim-point bearing (camera-relative °, offset already applied for single tags)
+        # and visible-tag count — updated every update() call; None when no target seen.
+        self.target_bearing: Optional[float] = None
+        self.tags_visible:   int             = 0
 
     # ── factory ──────────────────────────────────────────────────────────────
 
@@ -289,6 +304,7 @@ class ArucoNavigator:
         dt  = min(now - self._last_update, 0.1)
         self._last_update = now
         self.imu_heading  = heading
+        self.tags_visible = len(aruco_state.tags)  # always reflect current frame
 
         if self._state in (NavState.IDLE, NavState.COMPLETE, NavState.ERROR):
             return 0.0, 0.0
@@ -329,11 +345,13 @@ class ArucoNavigator:
         # ── Resolve aim point ─────────────────────────────────────────────────
         target_x, dist, cam_bearing = self._resolve_target(aruco_state, frame_cx)
 
-        self.target_x = target_x
-        self.tag_dist = dist
+        self.target_x       = target_x
+        self.tag_dist       = dist
+        self.target_bearing = cam_bearing   # aim bearing with left/right offset applied
 
         # ── Gate lost ─────────────────────────────────────────────────────────
         if target_x is None:
+            self.target_bearing = None
             if self._state == NavState.APPROACHING:
                 # Lost close to the gate — reverse briefly before searching so
                 # we don't overshoot into or past the gate unseen.
@@ -484,35 +502,46 @@ class ArucoNavigator:
         Work out where to aim this frame.
 
         Returns (target_x_pixels, distance_m, camera_bearing_degrees).
-        Priority: full gate → odd tag only → even tag only → None.
+
+        Gate N uses outside post (front tag 2N, even) and inside post (front tag 2N+1, odd).
+        Front face tags are 0–99; rear face tags are 100–199.
+        Rear tags indicate the gate has already been passed and are ignored here —
+        the detector still reports them so the dashboard can show them as passed.
+
+        Priority: full gate → outside-only → inside-only → None.
+        Single-tag aim (front tags only):
+          outside (even ID) → aim RIGHT of tag (gate opening is to the right)
+          inside  (odd  ID) → aim LEFT  of tag (gate opening is to the left)
         """
-        gate_id = self._gate_id
-        odd_id  = gate_id * 2 + 1
-        even_id = gate_id * 2 + 2
+        gate_id      = self._gate_id
+        base_outside = gate_id * 2        # even base → outside post
+        base_inside  = gate_id * 2 + 1   # odd  base → inside  post
 
         gate = state.gates.get(gate_id)
-        odd  = state.tags.get(odd_id)
-        even = state.tags.get(even_id)
 
         # Full gate visible
         if gate is not None:
             if not gate.correct_dir:
-                log.warning("Gate %d: correct_dir=False", gate_id)
+                log.warning("Gate %d: correct_dir=False (approaching from rear)", gate_id)
             bearing = gate.bearing if gate.bearing is not None \
                       else _pixel_bearing(gate.centre_x, frame_cx)
             return gate.centre_x, gate.distance, bearing
 
-        # Single tag visible
-        tag = odd if odd is not None else (even if even is not None else None)
+        # Single-tag fallback — front face only (0–99).
+        # Rear tags (100–199) mean the gate has already been passed; ignore them.
+        outside = state.tags.get(base_outside)
+        inside  = state.tags.get(base_inside)
+        tag = outside if outside is not None else inside
         if tag is None:
             return None, None, None
 
-        is_odd = (tag.id % 2 == 1)
-        offset = self._single_tag_offset(tag)
-        tx     = tag.center_x + (offset if is_odd else -offset)
+        is_inside = tag.id % 2 == 1   # odd front ID = inside post
+        offset    = self._single_tag_offset(tag)
+        # Inside post: gate opening is to the LEFT  → subtract offset
+        # Outside post: gate opening is to the RIGHT → add offset
+        tx = tag.center_x + (-offset if is_inside else offset)
 
         if tag.bearing is not None:
-            # Shift bearing by the pixel offset angle
             lateral_norm = (tx - tag.center_x) / max(frame_cx, 1)
             bearing = tag.bearing + math.degrees(math.atan(lateral_norm))
         else:
@@ -521,9 +550,16 @@ class ArucoNavigator:
         return tx, tag.distance, bearing
 
     def _single_tag_offset(self, tag) -> int:
-        """Pixel offset to aim beside a single visible post."""
-        if tag.distance is not None and tag.distance > 0.01:
-            return int(self.cfg.tag_offset_k / tag.distance)
+        """Pixel offset to aim beside a single visible post.
+
+        Uses the tag's apparent pixel area so the offset scales naturally with
+        distance: larger offset when the tag is far (small area) so the robot
+        aims well past the post toward the gap, converging as it closes in.
+
+        pixel_offset_k is tunable in robot.ini [navigator].  The distance-based
+        formula (tag_offset_k / distance) is intentionally not used: with the
+        default 0.4 it produces 0 pixels at any practical range.
+        """
         if tag.area > 0:
             return int(self.cfg.pixel_offset_k / math.sqrt(tag.area))
         return 80

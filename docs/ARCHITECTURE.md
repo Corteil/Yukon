@@ -135,12 +135,15 @@ class RobotState:
     data_logging:   bool
     no_motors:      bool            # drive commands suppressed (bench testing)
     speed_scale:    float           # current speed limit (0.0–1.0)
-    nav_state:      str             # navigator state name (e.g. "SEARCHING", "PASSING")
-    nav_gate:       int             # ArUco target gate index
-    nav_wp:         int             # GPS target waypoint index
-    nav_wp_dist:    Optional[float] # metres to current GPS waypoint
-    nav_wp_bear:    Optional[float] # bearing to current GPS waypoint
-    nav_bearing_err: Optional[float] # ArUco navigator bearing error (degrees)
+    nav_state:          str             # navigator state name (e.g. "SEARCHING", "PASSING")
+    nav_gate:           int             # ArUco target gate index
+    nav_wp:             int             # GPS target waypoint index
+    nav_wp_dist:        Optional[float] # metres to current GPS waypoint
+    nav_wp_bear:        Optional[float] # bearing to current GPS waypoint
+    nav_bearing_err:    Optional[float] # ArUco navigator bearing error (degrees)
+    nav_target_bearing: Optional[float] # camera-relative bearing to aim point (degrees)
+    nav_target_dist:    Optional[float] # metric distance to target tag
+    nav_tags_visible:   int             # number of ArUco tags visible in current frame
 ```
 
 `SystemState` (Pi health, polled by `_System` thread):
