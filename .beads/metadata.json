@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "HackyRacingRobot",
+  "project_id": "ec3ae577-22a9-43a3-bd85-53e68df6bd08"
+}

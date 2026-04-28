@@ -10,3 +10,8 @@ tests/__pycache__/
 tools/__pycache__/
 # Camera calibration binaries — generate locally with tools/calibrate_camera.py
 camera_cal*.npz
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
