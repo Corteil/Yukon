@@ -209,8 +209,8 @@ def _ibus_tank_mix_raw(ch):
         scale = IBUS_SPEED_MID
     else:
         scale = IBUS_SPEED_MIN
-    return (max(-1.0, min(1.0, thr - ste)) * scale,
-            max(-1.0, min(1.0, thr + ste)) * scale)
+    return (max(-1.0, min(1.0, thr + ste)) * scale,
+            max(-1.0, min(1.0, thr - ste)) * scale)
 
 
 def _decode_ibus(buf, st, lock, motor_sp, rc_channels, rc_ts):
