@@ -385,7 +385,7 @@ button:active{background:#2a2a42}
 .bearing-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
   pointer-events:none;display:none}
 
-/* Motor bars */
+/* Motor bars (mobile drive page) */
 .mrow{display:flex;align-items:center;gap:6px;padding:4px 8px}
 .mlabel{width:10px;font-size:12px;color:var(--gray);flex-shrink:0}
 .mtrack{flex:1;height:34px;background:var(--bg);border-radius:4px;position:relative}
@@ -393,6 +393,25 @@ button:active{background:#2a2a42}
 .mfill{position:absolute;top:3px;bottom:3px;border-radius:3px;transition:width .06s,left .06s}
 .mval{position:absolute;right:5px;top:50%;transform:translateY(-50%);
   font-size:11px;pointer-events:none}
+/* Motor quad panel — 4 individual motor cards with vertical speed bars */
+.mquad-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;padding:6px;flex:1;min-height:0}
+.mqcard{background:var(--bg);border:1px solid var(--border);border-radius:6px;
+  display:flex;flex-direction:row;align-items:stretch;padding:6px;gap:8px;
+  transition:border-color .3s;min-height:0;overflow:hidden}
+.mqcard.fault{border-color:var(--red)!important;background:#1a0808}
+.mqspeed-wrap{display:flex;flex-direction:column;align-items:center;gap:3px;min-height:0}
+.mqbar-track{position:relative;width:44px;flex:1;background:var(--bg);border-radius:4px;
+  border:1px solid var(--border);min-height:40px}
+.mqbar-mid{position:absolute;left:0;right:0;top:50%;height:1px;background:var(--border)}
+.mqbar-fill{position:absolute;left:4px;right:4px;border-radius:3px;transition:height .08s,top .08s}
+.mqval{font-size:20px;color:var(--gray)}
+.mqinfo{display:flex;flex-direction:column;justify-content:space-around;flex:1;min-width:0}
+.mqname{font-size:24px;font-weight:bold;color:var(--white);letter-spacing:.5px}
+.mqtemp{font-size:24px;color:var(--yellow)}
+.mqamp{font-size:24px;color:var(--orange)}
+.mqfault-badge{font-size:22px;font-weight:bold}
+.mqfault-badge.ok{color:var(--green)}
+.mqfault-badge.err{color:var(--red)}
 
 /* Telemetry */
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
@@ -792,15 +811,27 @@ function htmlCamera(i, camKey) {
     </div>`;
 }
 function htmlMotor(i) {
-  return `
-    <div class="mrow"><span class="mlabel">L</span>
-      <div class="mtrack"><div class="mmid"></div>
-        <div class="mfill" id="q${i}-fill-l"></div>
-        <span class="mval" id="q${i}-val-l">+0.00</span></div></div>
-    <div class="mrow"><span class="mlabel">R</span>
-      <div class="mtrack"><div class="mmid"></div>
-        <div class="mfill" id="q${i}-fill-r"></div>
-        <span class="mval" id="q${i}-val-r">+0.00</span></div></div>`;
+  const motors = [
+    {k:'fl', lbl:'FL·S3'}, {k:'fr', lbl:'FR·S2'},
+    {k:'rl', lbl:'RL·S4'}, {k:'rr', lbl:'RR·S1'},
+  ];
+  const cards = motors.map(({k, lbl}) => `
+    <div class="mqcard" id="q${i}-mqcard-${k}">
+      <div class="mqspeed-wrap">
+        <div class="mqbar-track">
+          <div class="mqbar-mid"></div>
+          <div class="mqbar-fill" id="q${i}-mfill-${k}"></div>
+        </div>
+        <span class="mqval" id="q${i}-mval-${k}">+0.00</span>
+      </div>
+      <div class="mqinfo">
+        <div class="mqname">${lbl}</div>
+        <span class="mqtemp" id="q${i}-mtemp-${k}">--</span>
+        <span class="mqamp" id="q${i}-mamp-${k}">--</span>
+        <span class="mqfault-badge ok" id="q${i}-mfault-${k}">OK</span>
+      </div>
+    </div>`).join('');
+  return `<div class="mquad-grid">${cards}</div>`;
 }
 function htmlTelemetry(i) {
   const mods = [
@@ -1130,9 +1161,36 @@ function updateCameraPanel(i, camKey, s) {
   }
 }
 
+function updateVBar(fillId, valId, v) {
+  const fill = el(fillId), valE = el(valId);
+  if (!fill || !valE) return;
+  const color = v > 0.005 ? C.green : v < -0.005 ? C.orange : null;
+  if (v >= 0) { fill.style.top=(50-v*50)+'%'; fill.style.height=(v*50)+'%'; }
+  else        { fill.style.top='50%';          fill.style.height=(-v*50)+'%'; }
+  fill.style.backgroundColor = color || 'transparent';
+  valE.textContent = (v>=0?'+':'')+v.toFixed(2);
+  valE.style.color = color || C.gray;
+}
+
 function updateMotorPanel(i, s) {
-  updateBar(`q${i}-fill-l`, `q${i}-val-l`, s.drive.left);
-  updateBar(`q${i}-fill-r`, `q${i}-val-r`, s.drive.right);
+  const t = s.telemetry;
+  const motors = {
+    fl: {speed: s.drive.left,  fault: t.fl_fault, temp: t.fl_temp, curr: t.fl_current},
+    fr: {speed: s.drive.right, fault: t.fr_fault, temp: t.fr_temp, curr: t.fr_current},
+    rl: {speed: s.drive.left,  fault: t.rl_fault, temp: t.rl_temp, curr: t.rl_current},
+    rr: {speed: s.drive.right, fault: t.rr_fault, temp: t.rr_temp, curr: t.rr_current},
+  };
+  for (const [k, m] of Object.entries(motors)) {
+    updateVBar(`q${i}-mfill-${k}`, `q${i}-mval-${k}`, m.speed);
+    const card = el(`q${i}-mqcard-${k}`);
+    if (card) card.className = 'mqcard' + (m.fault ? ' fault' : '');
+    const fb = el(`q${i}-mfault-${k}`);
+    if (fb) { fb.textContent = m.fault ? 'FAULT' : 'OK'; fb.className = 'mqfault-badge '+(m.fault?'err':'ok'); }
+    const te = el(`q${i}-mtemp-${k}`);
+    if (te) te.textContent = m.temp != null ? m.temp.toFixed(0)+'°C' : '--';
+    const ae = el(`q${i}-mamp-${k}`);
+    if (ae) ae.textContent = m.curr != null ? m.curr.toFixed(1)+' A' : '--';
+  }
 }
 
 function updateTelemPanel(i, s) {
