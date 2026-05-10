@@ -171,6 +171,10 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", \
 # Allystar TAU1308 GNSS (CH340 USB-serial)
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
     SYMLINK+="gnss", MODE="0666"
+
+# JC3248W535C display (ESP32-S3 native USB CDC)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", \
+    SYMLINK+="ttyACM_display"
 ```
 
 Replace the serial numbers with your actual device serials. To find them:
@@ -185,7 +189,7 @@ Reload and trigger:
 ```bash
 sudo udevadm control --reload-rules
 sudo udevadm trigger
-ls -la /dev/yukon /dev/sik /dev/gnss   # verify symlinks
+ls -la /dev/yukon /dev/sik /dev/gnss /dev/ttyACM_display   # verify symlinks
 ```
 
 The `robot.ini` defaults reference these symlinks (`/dev/yukon`, `/dev/gnss`, `/dev/sik`).
