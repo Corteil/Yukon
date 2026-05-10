@@ -1860,10 +1860,11 @@ function drawNavCanvas(canvas, s) {
   ctx.lineTo(cx + robotSize * 0.7, cy + robotSize * 0.7);
   ctx.closePath(); ctx.fill(); ctx.stroke();
 
-  // IMU heading arrow (if available)
+  // IMU heading arrow (if available) — points toward where North is in this
+  // robot-centric (forward=up) view, i.e. rotated -heading from forward.
   const heading = s.telemetry && s.telemetry.heading;
   if (heading != null) {
-    const hRad = (heading - 90) * Math.PI / 180;
+    const hRad = (-heading - 90) * Math.PI / 180;
     const hLen = 22;
     ctx.strokeStyle = C.red; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(cx, cy);
@@ -2992,11 +2993,14 @@ def main():
     parser.add_argument('--no-gps',         action='store_true', default=False)
     parser.add_argument('--no-motors',      action='store_true', default=False,
                         help='Suppress all motor/LED commands (bench test mode)')
+    parser.add_argument('--log-level', default=None,
+                        help='Logging level: DEBUG, INFO, WARNING, ERROR (overrides robot.ini [logging] level)')
     args = parser.parse_args()
 
-    _log_path = setup_logging()
-    log.info(f'Log: {_log_path}')
     cfg = _load_config(args.config)
+    log_level = args.log_level or _cfg(cfg, 'logging', 'level', 'INFO')
+    _log_path = setup_logging(level=log_level)
+    log.info(f'Log: {_log_path}')
 
     # Config: [dashboard] section, falls back to [web] for compatibility
     def cfgd(key, fallback, cast=str):

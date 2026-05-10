@@ -3452,6 +3452,8 @@ def main():
     parser.add_argument("--no-gps",          action="store_true", default=None)
     parser.add_argument("--no-motors",       action="store_true", default=False,
                         help="Suppress all motor/LED/bearing commands (bench test mode)")
+    parser.add_argument("--log-level",       default=None,
+                        help="Logging level: DEBUG, INFO, WARNING, ERROR (overrides robot.ini [logging] level)")
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
@@ -3478,7 +3480,8 @@ def main():
                     pass
         return _cfg(cfg, section, key, fallback, cast)
 
-    log_path = setup_logging()
+    log_level = args.log_level or _cfg(cfg, "logging", "level", "INFO")
+    log_path = setup_logging(level=log_level)
     log.info(f"Log file: {log_path}")
     log.info(f"Config: {args.config}")
 

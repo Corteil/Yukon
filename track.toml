@@ -33,7 +33,7 @@ outside_front = 0
 outside_rear  = 100
 inside_front  = 1
 inside_rear   = 101
-width_m       = 4.00
+width_m       = 1.00
 heading_hint  = -1.0
 notes         = ""
 
