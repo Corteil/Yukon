@@ -229,6 +229,8 @@ class NavConfig:
     ramp_rate:             float = 2.0
     tag_offset_k:          float = 0.4
     pixel_offset_k:        float = 5000
+    cam_heading_offset:    float = 0.0
+    max_single_tag_offset_deg: float = 45.0  # cap on single-tag angular offset (prevents extreme corrections at close range)
     obstacle_stop_dist:    float = 0.5   # metres — halt if obstacle closer than this
     obstacle_cone_deg:     float = 60.0  # forward cone full width for LiDAR check
     recover_reverse_time:  float = 0.4   # seconds to reverse when gate lost mid-approach
@@ -371,7 +373,9 @@ class ArucoNavigator:
             ramp_rate             = _f("ramp_rate",             NavConfig.ramp_rate),
             tag_offset_k          = _f("tag_offset_k",         NavConfig.tag_offset_k),
             pixel_offset_k        = _f("pixel_offset_k",       NavConfig.pixel_offset_k),
-            obstacle_stop_dist    = _f("obstacle_stop_dist",   NavConfig.obstacle_stop_dist),
+            cam_heading_offset        = _f("cam_heading_offset",         NavConfig.cam_heading_offset),
+            max_single_tag_offset_deg = _f("max_single_tag_offset_deg", NavConfig.max_single_tag_offset_deg),
+            obstacle_stop_dist        = _f("obstacle_stop_dist",         NavConfig.obstacle_stop_dist),
             obstacle_cone_deg     = _f("obstacle_cone_deg",    NavConfig.obstacle_cone_deg),
             recover_reverse_time  = _f("recover_reverse_time", NavConfig.recover_reverse_time),
             recover_reverse_speed = _f("recover_reverse_speed",NavConfig.recover_reverse_speed),
@@ -657,7 +661,7 @@ class ArucoNavigator:
         # ── Target visible ────────────────────────────────────────────────────
         # Update the IMU target heading from camera bearing
         if heading is not None and cam_bearing is not None:
-            self._imu_target = (heading + cam_bearing) % 360.0
+            self._imu_target = (heading + cam_bearing + self.cfg.cam_heading_offset) % 360.0
 
         # Prefer IMU heading error (smooth); fall back to raw camera bearing
         if heading is not None and self._imu_target is not None:
@@ -676,16 +680,17 @@ class ArucoNavigator:
             self._reset_search()
             self._set_state(NavState.ALIGNING)
 
-        if self._state == NavState.ALIGNING and aligned:
-            log.debug("Gate %d aligned (err=%.1f°)", self._gate_id, bearing_err)
-            self._set_state(NavState.APPROACHING)
+        if self._state == NavState.ALIGNING:
+            log.debug("Gate %d aligning: err=%.1f° imu_target=%s heading=%s dist=%s",
+                      self._gate_id, bearing_err,
+                      f"{self._imu_target:.1f}" if self._imu_target is not None else "N/A",
+                      f"{heading:.1f}" if heading is not None else "N/A",
+                      f"{dist:.2f}m" if dist is not None else "N/A")
+            if aligned:
+                self._set_state(NavState.APPROACHING)
 
         if self._state == NavState.APPROACHING:
-            tg = self._current_track_gate()
-            if is_single_tag and tg is not None:
-                pass_dist = tg.width_m
-            else:
-                pass_dist = self.cfg.pass_distance
+            pass_dist = self.cfg.pass_distance
             if dist is not None and dist <= pass_dist:
                 log.info("Gate %d PASSING (dist=%.2fm heading=%s%s)",
                          self._gate_id, dist,
@@ -698,13 +703,17 @@ class ArucoNavigator:
         # ── Drive ─────────────────────────────────────────────────────────────
         fwd = self.cfg.align_fwd_speed if self._state == NavState.ALIGNING \
               else self.cfg.fwd_speed
-        if heading is not None and self._imu_target is not None:
-            # IMU available: return target bearing; Yukon PID handles differential
+        if heading is not None and self._imu_target is not None \
+                and self._state != NavState.ALIGNING:
+            # APPROACHING/PASSING with IMU: Yukon bearing-hold PID drives the
+            # differential while Pi commands equal forward speed.
             l, r = self._apply_ramp(fwd, fwd, dt)
             return self._imu_target, l, r
         else:
-            # No IMU: Pi computes differential steering from camera bearing
-            l, r = self._apply_ramp(_clamp(fwd + steer), _clamp(fwd - steer), dt)
+            # ALIGNING (or no IMU): Pi computes differential directly.
+            # steer_kp is much more aggressive than the Yukon bearing-hold KP,
+            # so the robot pivots quickly to face the gate before approaching.
+            l, r = self._apply_ramp(_clamp(fwd - steer), _clamp(fwd + steer), dt)
             return None, l, r
 
     # ── Search ────────────────────────────────────────────────────────────────
@@ -824,7 +833,9 @@ class ArucoNavigator:
 
     def _enter_passing(self, heading: Optional[float], now: float):
         self._pass_start   = now
-        self._pass_heading = heading
+        # Prefer the camera-derived gate-centre heading so the robot drives
+        # through the gap even if the Yukon PID hasn't fully converged yet.
+        self._pass_heading = self._imu_target if self._imu_target is not None else heading
         self._set_state(NavState.PASSING)
         # Record tag IDs so PASSING can wait until they leave the frame
         tg = self._current_track_gate()
@@ -989,7 +1000,13 @@ class ArucoNavigator:
         # Inside post:  gate opening is to the LEFT  → aim left (subtract bearing offset).
         if tag.bearing is not None and tag.distance is not None \
                 and tag.distance > 0 and self.cfg.tag_offset_k > 0:
-            offset_deg = math.degrees(math.atan(self.cfg.tag_offset_k / tag.distance))
+            # Use half the gate width from the track file when available;
+            # fall back to tag_offset_k for unknown gate widths.
+            tg_for_offset = self._current_track_gate()
+            offset_m = (tg_for_offset.width_m / 2.0
+                        if tg_for_offset is not None
+                        else self.cfg.tag_offset_k)
+            offset_deg = math.degrees(math.atan(offset_m / tag.distance))
             # Outside post: gate is to right → add offset
             # Inside post:  gate is to left  → subtract offset
             bearing = tag.bearing + (-offset_deg if is_inside else offset_deg)
@@ -1047,12 +1064,14 @@ class ArucoNavigator:
 # search_cone_deg       = 90.0        # serpentine mode only: total sweep arc (±half each side of entry heading)
 # fwd_speed             = 0.45
 # align_fwd_speed       = 0.15
-# steer_kp              = 0.6
+# steer_kp              = 0.3    # reduce if overshooting in ALIGNING; increase if not turning enough
 # imu_kp                = 0.5
 # align_deadband        = 3.0
 # ramp_rate             = 2.0
 # tag_offset_k          = 0.4
 # pixel_offset_k        = 5000
+# cam_heading_offset    = 0.0    # degrees: camera boresight offset from robot/IMU forward (+ve = camera aims right)
+# max_single_tag_offset_deg = 45.0  # cap on single-tag angular offset to prevent extreme corrections at close range
 # obstacle_stop_dist    = 0.5    # metres — halt if LiDAR detects obstacle closer than this
 # obstacle_cone_deg     = 60.0   # full width of forward cone for obstacle check
 # recover_reverse_time  = 0.4    # seconds to reverse when gate lost mid-approach
