@@ -304,6 +304,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
             'pi_input_current': s.pi_input_current,
             'pi_input_power':   s.pi_input_power,
             'pi_ina_ok':        s.pi_ina_ok,
+            'pi_ina_warn_v':    s.pi_ina_warn_v,
+            'pi_ina_crit_v':    s.pi_ina_crit_v,
         },
     }
 
@@ -1497,7 +1499,7 @@ function updateSystemPanel(i, s) {
   if(inaRow) inaRow.style.display = sys.pi_ina_ok ? '' : 'none';
   if(sys.pi_ina_ok){
     const iv=el(`q${i}-ina-v`); if(iv){iv.textContent=`${sys.pi_input_voltage.toFixed(2)} V`;
-      iv.style.color=sys.pi_input_voltage>10.5?C.green:sys.pi_input_voltage>9.5?C.yellow:C.red;}
+      iv.style.color=sys.pi_input_voltage>sys.pi_ina_warn_v?C.green:sys.pi_input_voltage>sys.pi_ina_crit_v?C.yellow:C.red;}
     const ii=el(`q${i}-ina-i`); if(ii) ii.textContent=`${sys.pi_input_current.toFixed(3)} A`;
     const ip=el(`q${i}-ina-p`); if(ip) ip.textContent=`${sys.pi_input_power.toFixed(1)} W`;
   }
@@ -2044,7 +2046,7 @@ function updateMobile(s) {
   if(minaRow) minaRow.style.display = sys.pi_ina_ok ? '' : 'none';
   if(sys.pi_ina_ok){
     const iv=el('mob-ina-v'); if(iv){iv.textContent=`${sys.pi_input_voltage.toFixed(2)} V`;
-      iv.style.color=sys.pi_input_voltage>10.5?C.green:sys.pi_input_voltage>9.5?C.yellow:C.red;}
+      iv.style.color=sys.pi_input_voltage>sys.pi_ina_warn_v?C.green:sys.pi_input_voltage>sys.pi_ina_crit_v?C.yellow:C.red;}
     const ii=el('mob-ina-i'); if(ii) ii.textContent=`${sys.pi_input_current.toFixed(3)} A`;
     const ip=el('mob-ina-p'); if(ip) ip.textContent=`${sys.pi_input_power.toFixed(1)} W`;
   }

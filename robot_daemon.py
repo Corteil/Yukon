@@ -211,10 +211,12 @@ class SystemState:
     disk_percent:  float = 0.0   # 0–100 %
     timestamp:     float = 0.0
     # INA237 power monitor (Pi supply input to DC-DC converter; 0.0 when absent)
-    pi_input_voltage: float = 0.0   # V
-    pi_input_current: float = 0.0   # A
-    pi_input_power:   float = 0.0   # W
-    pi_ina_ok:        bool  = False
+    pi_input_voltage:   float = 0.0   # V
+    pi_input_current:   float = 0.0   # A
+    pi_input_power:     float = 0.0   # W
+    pi_ina_ok:          bool  = False
+    pi_ina_warn_v:      float = 11.8  # V — yellow below this
+    pi_ina_crit_v:      float = 11.0  # V — red below this
 
 
 @dataclass
@@ -1511,7 +1513,8 @@ class _System:
     """
 
     def __init__(self, ina_enabled: bool = False, ina_address: int = 0x40,
-                 ina_r_shunt: float = 0.1, ina_max_current: float = 2.0):
+                 ina_r_shunt: float = 0.1, ina_max_current: float = 2.0,
+                 ina_warn_v: float = 11.8, ina_crit_v: float = 11.0):
         self._lock  = threading.Lock()
         self._state = SystemState()
         self._stop  = threading.Event()
@@ -1519,6 +1522,8 @@ class _System:
         self._ina_address     = ina_address
         self._ina_r_shunt     = ina_r_shunt
         self._ina_max_current = ina_max_current
+        self._ina_warn_v      = ina_warn_v
+        self._ina_crit_v      = ina_crit_v
 
     def start(self):
         threading.Thread(target=self._run, daemon=True, name="system").start()
@@ -1605,6 +1610,8 @@ class _System:
                         pi_input_current = round(pi_i, 4),
                         pi_input_power   = round(pi_p, 2),
                         pi_ina_ok        = pi_ina_ok,
+                        pi_ina_warn_v    = self._ina_warn_v,
+                        pi_ina_crit_v    = self._ina_crit_v,
                     )
             except Exception as e:
                 log.debug(f"System poll error: {e}")
@@ -2041,6 +2048,8 @@ class Robot:
         ina237_address:     int   = 0x40,
         ina237_r_shunt:     float = 0.1,
         ina237_max_current: float = 2.0,
+        ina237_warn_v:      float = 11.8,
+        ina237_crit_v:      float = 11.0,
     ):
         self._ibus_port      = ibus_port
         self._yukon_port     = yukon_port if yukon_port is not None else self._find_yukon()
@@ -2127,6 +2136,8 @@ class Robot:
             ina_address     = ina237_address,
             ina_r_shunt     = ina237_r_shunt,
             ina_max_current = ina237_max_current,
+            ina_warn_v      = ina237_warn_v,
+            ina_crit_v      = ina237_crit_v,
         )
         self._data_logger:      _DataLogger          = _DataLogger()
         self._navigator:        Optional[object]     = None  # ArucoNavigator when available
@@ -3542,6 +3553,19 @@ def main():
     log.info(f"Log file: {log_path}")
     log.info(f"Config: {args.config}")
 
+    # Derive battery voltage thresholds from [battery] chemistry × cells
+    _BATT_CHEM = {
+        'lipo':  {'warn': 3.50, 'crit': 3.30},
+        'liion': {'warn': 3.40, 'crit': 3.20},
+        'nimh':  {'warn': 1.10, 'crit': 1.00},
+        'lfe':   {'warn': 3.00, 'crit': 2.80},
+    }
+    _batt_chem  = _cfg(cfg, 'battery', 'chemistry', 'lipo', str).lower()
+    _batt_cells = _cfg(cfg, 'battery', 'cells',     3,      int)
+    _defaults   = _BATT_CHEM.get(_batt_chem, _BATT_CHEM['lipo'])
+    _batt_warn  = _cfg(cfg, 'battery', 'voltage_warn',     _defaults['warn'] * _batt_cells, float)
+    _batt_crit  = _cfg(cfg, 'battery', 'voltage_critical', _defaults['crit'] * _batt_cells, float)
+
     robot = Robot(
         yukon_port     = arg(args.yukon_port,      "robot",  "yukon_port",     None,
                            lambda x: None if x.lower() in ("auto", "") else x),
@@ -3596,6 +3620,8 @@ def main():
         ina237_address        = _cfg(cfg, 'ina237', 'address',     0x40,  int),
         ina237_r_shunt        = _cfg(cfg, 'ina237', 'r_shunt',     0.1,   float),
         ina237_max_current    = _cfg(cfg, 'ina237', 'max_current', 2.0,   float),
+        ina237_warn_v         = _batt_warn,
+        ina237_crit_v         = _batt_crit,
     )
     robot.start()
 
