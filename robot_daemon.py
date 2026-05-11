@@ -274,6 +274,8 @@ class RobotState:
     nav_paused:         bool            = False  # navigator paused (drive commands suppressed in AUTO)
     robot_det_ok:       bool            = False  # True when robot detector is running
     robot_count:        int             = 0      # number of other robots visible in current frame
+    batt_warn_v:        float           = 10.5   # V — yellow threshold (from [battery])
+    batt_crit_v:        float           = 9.9    # V — red threshold (from [battery])
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2102,6 +2104,8 @@ class Robot:
         self._control_hz  = control_hz
         self._no_motors   = no_motors
         self._nav_paused  = False
+        self._batt_warn_v = ina237_warn_v   # shared battery warn threshold (V)
+        self._batt_crit_v = ina237_crit_v   # shared battery crit threshold (V)
         self._bench_enabled = True   # firmware v3+ starts with bench output enabled
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
@@ -2518,6 +2522,8 @@ class Robot:
                  if self._cam_front_right and self._cam_front_right.robot_det_ok
                     and self._cam_front_right.get_robot_detection() else 0),
             ),
+            batt_warn_v = self._batt_warn_v,
+            batt_crit_v = self._batt_crit_v,
         )
 
     def get_heading(self) -> Optional[float]:

@@ -1730,7 +1730,7 @@ function updateStatusBar(s) {
   el('sb').style.borderColor = mc;
 
   const volt=s.telemetry.voltage;
-  const vc=volt!=null ? (volt<10.5?C.red:volt<11.5?C.yellow:C.green) : C.gray;
+  const vc=volt!=null ? (volt<s.batt_crit_v?C.red:volt<s.batt_warn_v?C.yellow:C.green) : C.gray;
   const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
 
   const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';

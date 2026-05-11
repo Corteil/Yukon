@@ -419,6 +419,9 @@ class _GsState:
                 "_link_packets": self.packets,
                 "_ntrip_status": self.ntrip_status,
                 "_ntrip_bytes":  self.ntrip_bytes,
+                # Battery voltage thresholds (from CLI / robot.ini [battery])
+                "batt_warn_v": _batt_warn_v,
+                "batt_crit_v": _batt_crit_v,
                 # Alarms log (most recent first, for the JS log panel)
                 "_alarms": list(self._alarms),
             }
@@ -426,6 +429,10 @@ class _GsState:
     def link_age(self) -> float:
         return time.monotonic() - self.last_rx if self.last_rx else 999.0
 
+
+# Battery voltage thresholds — overridden by CLI args at startup
+_batt_warn_v: float = 10.5
+_batt_crit_v: float = 9.9
 
 _gs = _GsState()
 
@@ -807,7 +814,7 @@ class FakeLinkV2(_LinkBase):
             ))
 
             # ── Low voltage alarm ─────────────────────────────────────────
-            if voltage < 11.5:
+            if voltage < _batt_warn_v:
                 frames.append(encode_alarm(
                     ALARM_LOW_VOLTAGE, ALARM_SEV_WARNING,
                     f"Low voltage {voltage:.2f}V"
@@ -1197,12 +1204,21 @@ def main():
     ap.add_argument("--ntrip-lat",    default=52.2,  type=float)
     ap.add_argument("--ntrip-lon",    default=0.1,   type=float)
     ap.add_argument("--ntrip-alt",    default=20.0,  type=float)
+    # Battery voltage thresholds (derived from [battery] chemistry×cells in robot.ini)
+    ap.add_argument("--batt-warn-v",  default=10.5, type=float,
+                    help="Pack voltage warn threshold V (default 10.5 = lipo 3S)")
+    ap.add_argument("--batt-crit-v",  default=9.9,  type=float,
+                    help="Pack voltage critical threshold V (default 9.9 = lipo 3S)")
     # HTML
     ap.add_argument("--html",         default=None,
                     help="Path to dashboard HTML file (default: ground_station.html "
                          "in the same directory)")
     ap.add_argument("--log-level",    default="INFO")
     args = ap.parse_args()
+
+    global _batt_warn_v, _batt_crit_v
+    _batt_warn_v = args.batt_warn_v
+    _batt_crit_v = args.batt_crit_v
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),

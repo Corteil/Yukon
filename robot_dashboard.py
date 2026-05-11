@@ -207,6 +207,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         'no_motors':     state.no_motors,
         'bench_enabled': state.bench_enabled,
         'nav_paused':    state.nav_paused,
+        'batt_warn_v':   state.batt_warn_v,
+        'batt_crit_v':   state.batt_crit_v,
         'nav_state':          state.nav_state,
         'nav_gate':           state.nav_gate,
         'nav_bearing_err':    nav_bearing_err,
@@ -2072,7 +2074,7 @@ function updateStatusBar(s) {
   el('sb').style.borderColor = mc;
 
   const volt=s.telemetry.voltage;
-  const vc=volt!=null ? (volt<10.5?C.red:volt<11.5?C.yellow:C.green) : C.gray;
+  const vc=volt!=null ? (volt<s.batt_crit_v?C.red:volt<s.batt_warn_v?C.yellow:C.green) : C.gray;
   const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
 
   const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
