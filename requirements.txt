@@ -16,3 +16,7 @@ pillow>=9.0
 
 # Optional: ArUco marker detection and camera fallback
 opencv-python>=4.5
+
+# Optional: INA237 power monitor (Adafruit product 6340)
+# Also requires: pip3 install adafruit-blinka adafruit-circuitpython-busdevice
+adafruit-circuitpython-ina23x

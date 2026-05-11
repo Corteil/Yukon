@@ -210,6 +210,11 @@ class SystemState:
     disk_total_gb: float = 0.0   # GB
     disk_percent:  float = 0.0   # 0–100 %
     timestamp:     float = 0.0
+    # INA237 power monitor (Pi supply input to DC-DC converter; 0.0 when absent)
+    pi_input_voltage: float = 0.0   # V
+    pi_input_current: float = 0.0   # A
+    pi_input_power:   float = 0.0   # W
+    pi_ina_ok:        bool  = False
 
 
 @dataclass
@@ -1505,10 +1510,15 @@ class _System:
     Uses /proc and /sys directly — no psutil dependency.
     """
 
-    def __init__(self):
+    def __init__(self, ina_enabled: bool = False, ina_address: int = 0x40,
+                 ina_r_shunt: float = 0.1, ina_max_current: float = 2.0):
         self._lock  = threading.Lock()
         self._state = SystemState()
         self._stop  = threading.Event()
+        self._ina_enabled     = ina_enabled
+        self._ina_address     = ina_address
+        self._ina_r_shunt     = ina_r_shunt
+        self._ina_max_current = ina_max_current
 
     def start(self):
         threading.Thread(target=self._run, daemon=True, name="system").start()
@@ -1516,8 +1526,22 @@ class _System:
     def _run(self):
         import shutil
         prev_total = prev_idle = 0
+        ina = None
+        ina_retry_at = 0.0
 
         while not self._stop.is_set():
+            # INA237 connect / reconnect
+            if self._ina_enabled and ina is None and time.monotonic() >= ina_retry_at:
+                try:
+                    from drivers.ina237 import INA237
+                    ina = INA237(address=self._ina_address,
+                                 r_shunt=self._ina_r_shunt,
+                                 max_current=self._ina_max_current)
+                    log.info("INA237 connected at 0x%02X", self._ina_address)
+                except Exception as e:
+                    log.warning("INA237 not available: %s", e)
+                    ina_retry_at = time.monotonic() + 10.0
+
             try:
                 # CPU % (derived from /proc/stat delta)
                 total, idle = self._stat()
@@ -1553,6 +1577,18 @@ class _System:
                 disk_used  = du.used  / 1e9
                 disk_pct   = 100.0 * du.used / du.total if du.total else 0.0
 
+                # INA237 power monitor
+                pi_v = pi_i = pi_p = 0.0
+                pi_ina_ok = False
+                if ina is not None:
+                    try:
+                        pi_v, pi_i, pi_p = ina.read_all()
+                        pi_ina_ok = True
+                    except Exception as e:
+                        log.debug("INA237 read error: %s", e)
+                        ina = None
+                        ina_retry_at = time.monotonic() + 5.0
+
                 with self._lock:
                     self._state = SystemState(
                         cpu_percent   = round(cpu_pct,  1),
@@ -1565,6 +1601,10 @@ class _System:
                         disk_total_gb = round(disk_total, 2),
                         disk_percent  = round(disk_pct,  1),
                         timestamp     = time.monotonic(),
+                        pi_input_voltage = round(pi_v, 3),
+                        pi_input_current = round(pi_i, 4),
+                        pi_input_power   = round(pi_p, 2),
+                        pi_ina_ok        = pi_ina_ok,
                     )
             except Exception as e:
                 log.debug(f"System poll error: {e}")
@@ -1997,6 +2037,10 @@ class Robot:
         speed_mid:      float = 0.6,
         control_hz:     int   = 50,
         no_motors:      bool  = False,  # suppress all drive commands (bench testing)
+        ina237_enabled:     bool  = False,
+        ina237_address:     int   = 0x40,
+        ina237_r_shunt:     float = 0.1,
+        ina237_max_current: float = 2.0,
     ):
         self._ibus_port      = ibus_port
         self._yukon_port     = yukon_port if yukon_port is not None else self._find_yukon()
@@ -2078,7 +2122,12 @@ class Robot:
         self._current_gate_id:  int  = 0
         self._lidar:            Optional[_Lidar]     = None
         self._gps:              Optional[_Gps]       = None
-        self._system:           _System              = _System()
+        self._system:           _System              = _System(
+            ina_enabled     = ina237_enabled,
+            ina_address     = ina237_address,
+            ina_r_shunt     = ina237_r_shunt,
+            ina_max_current = ina237_max_current,
+        )
         self._data_logger:      _DataLogger          = _DataLogger()
         self._navigator:        Optional[object]     = None  # ArucoNavigator when available
         self._gps_navigator:    Optional[object]     = None  # GpsNavigator when available
@@ -3543,6 +3592,10 @@ def main():
         rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),
         max_recording_minutes = _cfg(cfg, 'output', 'max_recording_minutes', 0.0, float),
         data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
+        ina237_enabled        = _cfg(cfg, 'ina237', 'enabled',     False, bool),
+        ina237_address        = _cfg(cfg, 'ina237', 'address',     0x40,  int),
+        ina237_r_shunt        = _cfg(cfg, 'ina237', 'r_shunt',     0.1,   float),
+        ina237_max_current    = _cfg(cfg, 'ina237', 'max_current', 2.0,   float),
     )
     robot.start()
 

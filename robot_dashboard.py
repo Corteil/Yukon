@@ -300,6 +300,10 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
             'disk_used_gb':  s.disk_used_gb,
             'disk_total_gb': s.disk_total_gb,
             'disk_percent':  s.disk_percent,
+            'pi_input_voltage': s.pi_input_voltage,
+            'pi_input_current': s.pi_input_current,
+            'pi_input_power':   s.pi_input_power,
+            'pi_ina_ok':        s.pi_ina_ok,
         },
     }
 
@@ -705,6 +709,12 @@ button:active{background:#2a2a42}
         <div class="sys-row"><label>Disk</label>
           <div class="sys-track"><div class="sys-fill" id="mob-disk-fill"></div>
             <span class="sys-val" id="mob-disk-val">--</span></div></div>
+        <div class="sys-row" style="padding:3px 8px" id="mob-ina-row">
+          <label>12 V in</label>
+          <span id="mob-ina-v" style="font-size:13px;margin-left:5px">--</span>
+          <span id="mob-ina-i" style="font-size:11px;color:var(--gray);margin-left:8px">--</span>
+          <span id="mob-ina-p" style="font-size:11px;color:var(--gray);margin-left:8px">--</span>
+        </div>
       </div>
       <div class="mob-section" style="flex:1;display:flex;flex-direction:column;min-height:180px">
         <div class="mob-title">LiDAR</div>
@@ -968,7 +978,13 @@ function htmlSystem(i) {
         <span class="sys-val" id="q${i}-mem-val">--</span></div></div>
     <div class="sys-row"><label>Disk</label>
       <div class="sys-track"><div class="sys-fill" id="q${i}-disk-fill"></div>
-        <span class="sys-val" id="q${i}-disk-val">--</span></div></div>`;
+        <span class="sys-val" id="q${i}-disk-val">--</span></div></div>
+    <div class="sys-row" style="padding:3px 8px" id="q${i}-ina-row">
+      <label>12 V in</label>
+      <span id="q${i}-ina-v"  style="font-size:13px;margin-left:5px">--</span>
+      <span id="q${i}-ina-i"  style="font-size:11px;color:var(--gray);margin-left:8px">--</span>
+      <span id="q${i}-ina-p"  style="font-size:11px;color:var(--gray);margin-left:8px">--</span>
+    </div>`;
 }
 function htmlLidar(i) {
   return `<canvas id="q${i}-lidar-canvas" class="lidar-canvas"></canvas>`;
@@ -1476,6 +1492,15 @@ function updateSystemPanel(i, s) {
   const te=el(`q${i}-temp`); if(te){te.textContent=`${sys.cpu_temp_c.toFixed(0)}°C`;
     te.style.color=sys.cpu_temp_c<60?C.green:sys.cpu_temp_c<75?C.yellow:C.red;}
   const fe=el(`q${i}-freq`); if(fe) fe.textContent=`${sys.cpu_freq_mhz.toFixed(0)} MHz`;
+  // INA237 power monitor row
+  const inaRow=el(`q${i}-ina-row`);
+  if(inaRow) inaRow.style.display = sys.pi_ina_ok ? '' : 'none';
+  if(sys.pi_ina_ok){
+    const iv=el(`q${i}-ina-v`); if(iv){iv.textContent=`${sys.pi_input_voltage.toFixed(2)} V`;
+      iv.style.color=sys.pi_input_voltage>10.5?C.green:sys.pi_input_voltage>9.5?C.yellow:C.red;}
+    const ii=el(`q${i}-ina-i`); if(ii) ii.textContent=`${sys.pi_input_current.toFixed(3)} A`;
+    const ip=el(`q${i}-ina-p`); if(ip) ip.textContent=`${sys.pi_input_power.toFixed(1)} W`;
+  }
 }
 
 function updateLidarPanel(i, s) {
@@ -2015,6 +2040,14 @@ function updateMobile(s) {
   if(te){te.textContent=`${sys.cpu_temp_c.toFixed(0)}°C`;
     te.style.color=sys.cpu_temp_c<60?C.green:sys.cpu_temp_c<75?C.yellow:C.red;}
   const fe=el('mob-freq'); if(fe) fe.textContent=`${sys.cpu_freq_mhz.toFixed(0)} MHz`;
+  const minaRow=el('mob-ina-row');
+  if(minaRow) minaRow.style.display = sys.pi_ina_ok ? '' : 'none';
+  if(sys.pi_ina_ok){
+    const iv=el('mob-ina-v'); if(iv){iv.textContent=`${sys.pi_input_voltage.toFixed(2)} V`;
+      iv.style.color=sys.pi_input_voltage>10.5?C.green:sys.pi_input_voltage>9.5?C.yellow:C.red;}
+    const ii=el('mob-ina-i'); if(ii) ii.textContent=`${sys.pi_input_current.toFixed(3)} A`;
+    const ip=el('mob-ina-p'); if(ip) ip.textContent=`${sys.pi_input_power.toFixed(1)} W`;
+  }
   drawLidar(el('mob-lidar-canvas'),s.lidar.angles,s.lidar.distances);
 }
 
