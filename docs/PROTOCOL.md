@@ -38,7 +38,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_LEFT`       | 2    | Motor speed byte (see below) — **only applied in AUTO mode** |
 | `CMD_RIGHT`      | 3    | Motor speed byte — **only applied in AUTO mode** |
 | `CMD_KILL`       | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`     | 5    | Ignored — device replies with 25 sensor data packets then ACK |
+| `CMD_SENSOR`     | 5    | Ignored — device replies with 25 sensor data packets then ACK (27 packets on firmware v5+) |
 | `CMD_BEARING`    | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
 | `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
 | `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |
@@ -127,8 +127,10 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 | 22 | FR fault (SLOT2)  | 0 or 1                                               | —    |
 | 23 | FL fault (SLOT3)  | 0 or 1                                               | —    |
 | 24 | RL fault (SLOT4)  | 0 or 1                                               | —    |
+| 25 | Applied left speed  | **firmware v5+** — actual post-correction speed sent to left motors (FL+RL). Same encoding as `CMD_LEFT` (0–100 forward, 101–200 reverse). | — |
+| 26 | Applied right speed | **firmware v5+** — actual post-correction speed sent to right motors (FR+RR). Same encoding as `CMD_RIGHT`. | — |
 
-`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x48`).
+`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x4A`).
 
 **Note on ID overlap with CMD_RC_QUERY:** `CMD_RC_QUERY` response IDs start at 8 (`RESP_RC_BASE`). The host disambiguates by queue: `CMD_SENSOR` responses always start with ID 0 (Voltage), which routes to the sensor queue; `CMD_RC_QUERY` responses start with ID 8 (channel 0), which routes to the RC queue.
 
@@ -226,7 +228,7 @@ SYNC = `0x48 0x52` (`HR`). CRC16 covers TYPE through end of PAYLOAD.
 | Type | Hex  | Rate   | Payload format |
 |------|------|--------|----------------|
 | STATE  | 0x01 | 5 Hz | `<HBBBhhhBBB>` — flags(u16), mode, drive_left, drive_right, imu_heading, pitch, roll, speed_scale_pct, … |
-| TELEM  | 0x02 | 5 Hz | `<HhHHBBHHHHBB>` — voltage(÷100 V), current(÷100 A), temps, fault flags, IMU … |
+| TELEM  | 0x02 | 5 Hz | `<HHbbbBHhhbb>` (16 bytes) — voltage(mV), current(mA), temps(°C), fault flags, heading(0.1°), pitch(0.1°), roll(0.1°), applied_l(×100), applied_r(×100) |
 | GPS    | 0x03 | 2 Hz | `<iiBBHHHHHBBBB>` — lat/lon (1e-7°), alt(mm), fix, sats, hdop, … + variable per-satellite records |
 | SYS    | 0x04 | 1 Hz | `<BBBBh>` — cpu%, mem%, disk%, temp(°C) |
 | NAV    | 0x05 | 2 Hz | Variable length — see below |

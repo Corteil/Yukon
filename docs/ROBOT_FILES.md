@@ -155,7 +155,7 @@ Each record contains a complete snapshot of all sensor inputs and motor outputs:
 | `mode`, `auto_type`, `speed_scale` | Robot operating state |
 | `rc_channels` | All 14 raw RC µs values |
 | `drive` | `left` / `right` motor outputs — the training labels |
-| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags, firmware version |
+| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags, firmware version, applied motor speeds (firmware v5+) |
 | `gps` | Lat, lon, alt, speed, fix quality, satellites, HDOP, h_error |
 | `lidar` | Full angle and distance arrays |
 | `aruco` | All detected tags and gates with bearings and distances |
@@ -207,7 +207,7 @@ On desktop and touchscreen the UI shows a configurable 2×2 panel grid; on mobil
 | `gps_sky` | GPS sky view (satellites) |
 | `gps_track` | GPS track map |
 | `depth_map` | Depth map visualisation |
-| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll |
+| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, applied motor speeds (firmware v5+) |
 | `system` | CPU, memory, disk, system stats |
 | `imu` | IMU compass and orientation display |
 

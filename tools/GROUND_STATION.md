@@ -31,7 +31,7 @@ Frame: [SYNC:2][TYPE:1][FLAGS:1][LEN:2 LE][PAYLOAD:N][CRC16:2 LE]
 | Type | Direction | Rate | Content |
 |------|-----------|------|---------|
 | STATE  (0x01) | ↓ robot | 5 Hz | Mode, drive, flags, speed scale |
-| TELEM  (0x02) | ↓ robot | 5 Hz | Voltage, current, temps, IMU heading |
+| TELEM  (0x02) | ↓ robot | 5 Hz | Voltage, current, temps, IMU heading, applied motor speeds (firmware v5+) |
 | GPS    (0x03) | ↓ robot | 2 Hz | Position, fix, satellites + per-satellite sky data |
 | SYS    (0x04) | ↓ robot | 1 Hz | CPU, memory, disk, Pi temperature |
 | NAV    (0x05) | ↓ robot | 2 Hz | Navigator state, gate/WP, bearing, distance, tag IDs, gate labels |
@@ -278,7 +278,7 @@ SiK V3 air rate: 64 kbps; usable ~5760 bytes/sec after overhead.
 
 | Data | Rate | Typical size | Bandwidth |
 |------|------|-------------|-----------|
-| STATE + TELEM | 5 Hz | 22+30 B | ~260 B/s ↓ |
+| STATE + TELEM | 5 Hz | 22+24 B | ~230 B/s ↓ |
 | GPS + satellites | 2 Hz | ~70 B | ~140 B/s ↓ |
 | NAV + TAGS | 2+5 Hz | ~20–50+~30 B | ~190 B/s ↓ |
 | SYS + LIDAR | 1 Hz | 12+~21 B | ~33 B/s ↓ |
