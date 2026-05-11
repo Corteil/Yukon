@@ -1736,6 +1736,8 @@ class _DataLogger:
                 'heading':     round(t.heading, 2) if t.heading is not None else None,
                 'left_fault':  t.left_fault,
                 'right_fault': t.right_fault,
+                'applied_l':   round(t.applied_l, 3),
+                'applied_r':   round(t.applied_r, 3),
             },
             'gps': {
                 'lat':       g.latitude,
