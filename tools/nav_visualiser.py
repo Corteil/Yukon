@@ -828,10 +828,12 @@ class HttpSource:
         if hdg is not None:
             self._hdg = hdg
 
-        # Motor outputs → dead-reckon position
+        # Motor outputs → dead-reckon position (prefer actual applied speeds)
         drive = d.get("drive", {})
-        left  = drive.get("left",  0.0)
-        right = drive.get("right", 0.0)
+        telem = d.get("telemetry", {})
+        al, ar = telem.get("applied_l", 0.0), telem.get("applied_r", 0.0)
+        left  = al if (al != 0.0 or ar != 0.0) else drive.get("left",  0.0)
+        right = ar if (al != 0.0 or ar != 0.0) else drive.get("right", 0.0)
         self._integrate(left, right, dt)
         if hdg is None:
             pass   # heading already updated above if present

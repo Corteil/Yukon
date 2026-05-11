@@ -267,6 +267,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
             'fr_fault':   t.fr_fault,
             'fl_fault':   t.fl_fault,
             'rl_fault':   t.rl_fault,
+            'applied_l':  round(t.applied_l, 3),
+            'applied_r':  round(t.applied_r, 3),
         },
         'gps': {
             'latitude':         g.latitude,
@@ -1174,11 +1176,14 @@ function updateVBar(fillId, valId, v) {
 
 function updateMotorPanel(i, s) {
   const t = s.telemetry;
+  const useActual = (t.applied_l !== 0.0 || t.applied_r !== 0.0);
+  const spL = useActual ? t.applied_l : s.drive.left;
+  const spR = useActual ? t.applied_r : s.drive.right;
   const motors = {
-    fl: {speed: s.drive.left,  fault: t.fl_fault, temp: t.fl_temp, curr: t.fl_current},
-    fr: {speed: s.drive.right, fault: t.fr_fault, temp: t.fr_temp, curr: t.fr_current},
-    rl: {speed: s.drive.left,  fault: t.rl_fault, temp: t.rl_temp, curr: t.rl_current},
-    rr: {speed: s.drive.right, fault: t.rr_fault, temp: t.rr_temp, curr: t.rr_current},
+    fl: {speed: spL, fault: t.fl_fault, temp: t.fl_temp, curr: t.fl_current},
+    fr: {speed: spR, fault: t.fr_fault, temp: t.fr_temp, curr: t.fr_current},
+    rl: {speed: spL, fault: t.rl_fault, temp: t.rl_temp, curr: t.rl_current},
+    rr: {speed: spR, fault: t.rr_fault, temp: t.rr_temp, curr: t.rr_current},
   };
   for (const [k, m] of Object.entries(motors)) {
     updateVBar(`q${i}-mfill-${k}`, `q${i}-mval-${k}`, m.speed);

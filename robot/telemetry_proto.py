@@ -358,16 +358,18 @@ def decode_state(payload: bytes) -> dict:
     }
 
 
-# TELEM — 13 bytes
+# TELEM — 16 bytes
 # voltage:u16(mV) current:u16(mA) board_temp:i8 left_temp:i8 right_temp:i8
 # faults:u8 heading:u16(0.1°) pitch:i16(0.1°) roll:i16(0.1°)
-_FMT_TELEM = struct.Struct('<HHbbbBHhh')
+# applied_l:i8(×100) applied_r:i8(×100)  — firmware v5+; 0 when unavailable
+_FMT_TELEM = struct.Struct('<HHbbbBHhhbb')
 
 def encode_telem(voltage_v: float, current_a: float,
                  board_temp: float, left_temp: float, right_temp: float,
                  left_fault: bool, right_fault: bool,
                  heading: Optional[float], pitch: Optional[float],
-                 roll: Optional[float]) -> bytes:
+                 roll: Optional[float],
+                 applied_l: float = 0.0, applied_r: float = 0.0) -> bytes:
     v_mv  = max(0,      min(65534, int(round(voltage_v  * 1000))))
     i_ma  = max(0,      min(65534, int(round(current_a  * 1000))))
     bt    = max(-128,   min(127,   int(round(board_temp))))
@@ -377,11 +379,13 @@ def encode_telem(voltage_v: float, current_a: float,
     hdg   = NULL_U16 if heading is None else max(0,     min(3599, int(round(heading * 10))))
     pit   = NULL_I16 if pitch   is None else max(-1800, min(1800, int(round(pitch   * 10))))
     rol   = NULL_I16 if roll    is None else max(-1800, min(1800, int(round(roll    * 10))))
-    return encode_frame(TYPE_TELEM, _FMT_TELEM.pack(v_mv, i_ma, bt, lt, rt, faults, hdg, pit, rol))
+    al    = max(-100,  min(100,  int(round(applied_l * 100))))
+    ar    = max(-100,  min(100,  int(round(applied_r * 100))))
+    return encode_frame(TYPE_TELEM, _FMT_TELEM.pack(v_mv, i_ma, bt, lt, rt, faults, hdg, pit, rol, al, ar))
 
 
 def decode_telem(payload: bytes) -> dict:
-    v_mv, i_ma, bt, lt, rt, faults, hdg, pit, rol = _FMT_TELEM.unpack(payload[:_FMT_TELEM.size])
+    v_mv, i_ma, bt, lt, rt, faults, hdg, pit, rol, al, ar = _FMT_TELEM.unpack(payload[:_FMT_TELEM.size])
     return {
         "voltage":     v_mv  / 1000.0,
         "current":     i_ma  / 1000.0,
@@ -393,6 +397,8 @@ def decode_telem(payload: bytes) -> dict:
         "heading":     None if hdg == NULL_U16 else hdg / 10.0,
         "pitch":       None if pit == NULL_I16 else pit / 10.0,
         "roll":        None if rol == NULL_I16 else rol / 10.0,
+        "applied_l":   al / 100.0,
+        "applied_r":   ar / 100.0,
     }
 
 

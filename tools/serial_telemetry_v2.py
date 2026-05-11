@@ -327,6 +327,8 @@ class TelemetryBridgeV2:
                     heading     = t.heading,
                     pitch       = t.pitch,
                     roll        = t.roll,
+                    applied_l   = t.applied_l,
+                    applied_r   = t.applied_r,
                 ))
                 self._send(encode_mod_telem(
                     fl_temp  = t.fl_temp,  fr_temp  = t.fr_temp,

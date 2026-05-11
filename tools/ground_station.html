@@ -851,8 +851,10 @@ function updateCameraPanel(i, camKey, s) {
 }
 
 function updateMotorPanel(i, s) {
-  updateBar(`q${i}-fill-l`, `q${i}-val-l`, s.drive.left);
-  updateBar(`q${i}-fill-r`, `q${i}-val-r`, s.drive.right);
+  const t = s.telemetry || {};
+  const useActual = (t.applied_l !== undefined && (t.applied_l !== 0.0 || t.applied_r !== 0.0));
+  updateBar(`q${i}-fill-l`, `q${i}-val-l`, useActual ? t.applied_l : s.drive.left);
+  updateBar(`q${i}-fill-r`, `q${i}-val-r`, useActual ? t.applied_r : s.drive.right);
 }
 
 function updateTelemPanel(i, s) {

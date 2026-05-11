@@ -119,13 +119,18 @@ def build_drive(state) -> bytes:
 
     def to_pct(v): return max(-100, min(100, int(v * 100)))
 
-    # Left side (SLOT3=FL, SLOT4=RL): direct from drive.left
-    fl = to_pct(d.left)
-    rl = to_pct(d.left)
+    # Prefer actual applied speeds from firmware v5+; fall back to commanded.
+    use_actual = (t.applied_l != 0.0 or t.applied_r != 0.0)
+    sp_l = t.applied_l if use_actual else d.left
+    sp_r = t.applied_r if use_actual else d.right
+
+    # Left side (SLOT3=FL, SLOT4=RL): direct from left speed
+    fl = to_pct(sp_l)
+    rl = to_pct(sp_l)
     # Right side (SLOT2=FR, SLOT1=RR): motor_core applies -right to hardware,
     # so display the commanded value (positive = forward) without sign flip.
-    fr = to_pct(d.right)
-    rr = to_pct(d.right)
+    fr = to_pct(sp_r)
+    rr = to_pct(sp_r)
 
     payload = struct.pack('>ff', d.left, d.right)  # raw -1..+1
     payload += struct.pack('>bbbb', fl, fr, rl, rr) # motor % signed bytes
