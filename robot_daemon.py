@@ -1766,10 +1766,14 @@ class _DataLogger:
                 'bearing_err': state.nav_bearing_err,
             },
             'system': {
-                'cpu_pct':  round(s.cpu_percent,  1),
-                'cpu_temp': round(s.cpu_temp_c,   1),
-                'mem_pct':  round(s.mem_percent,  1),
-                'disk_pct': round(s.disk_percent, 1),
+                'cpu_pct':   round(s.cpu_percent,  1),
+                'cpu_temp':  round(s.cpu_temp_c,   1),
+                'mem_pct':   round(s.mem_percent,  1),
+                'disk_pct':  round(s.disk_percent, 1),
+                'pi_ina_ok': s.pi_ina_ok,
+                'pi_v':      round(s.pi_input_voltage, 3) if s.pi_ina_ok else None,
+                'pi_i':      round(s.pi_input_current, 4) if s.pi_ina_ok else None,
+                'pi_p':      round(s.pi_input_power,   2) if s.pi_ina_ok else None,
             },
         }
 
