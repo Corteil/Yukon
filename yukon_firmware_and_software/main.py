@@ -25,7 +25,7 @@ def _pio_uart_rx():
 # Hardware constants
 LED_A = 'A'
 LED_B = 'B'
-FIRMWARE_VERSION = 4   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
+FIRMWARE_VERSION = 5   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
 UPDATES      = 50
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
@@ -105,11 +105,14 @@ RESP_FAULT_RR = 21  # rear-right  fault (0 or 1)
 RESP_FAULT_FR = 22
 RESP_FAULT_FL = 23
 RESP_FAULT_RL = 24
+RESP_SPEED_L  = 25  # applied left  speed after bearing correction, same encoding as CMD_LEFT (0–200)
+RESP_SPEED_R  = 26  # applied right speed after bearing correction, same encoding as CMD_RIGHT
 
 # ── Shared state (protected by _lock) ────────────────────────────────────────
 
 _lock            = _thread.allocate_lock()
 _motor_sp        = [0.0, 0.0]  # [left, right] — mutable list avoids 'global' from core 1
+_applied_sp      = [0.0, 0.0]  # post-correction speeds written by Core 1; read by CMD_SENSOR
 _bearing_target  = None    # None = disabled; float 0–360 = active target
 _current_heading = 0.0     # updated each loop by imu.update() on core 0
 _current_pitch   = 0.0     # degrees, positive = nose up
@@ -182,6 +185,12 @@ def _bearing_decode(value):
 def _angle_diff(target, current):
     """Signed shortest-arc difference (target − current), range −180..+180."""
     return (target - current + 180.0) % 360.0 - 180.0
+
+def _speed_encode(speed):
+    """Encode motor speed -1.0..+1.0 → byte 0–200 (same range as CMD_LEFT/CMD_RIGHT)."""
+    if speed >= 0.0:
+        return min(100, int(speed * 100 + 0.5))
+    return min(200, 100 + int(abs(speed) * 100 + 0.5))
 
 
 # ── iBUS RC receiver (PIO UART on GP26) ───────────────────────────────────────
@@ -414,7 +423,7 @@ def _update_pattern():
 
 def motor_core(motors_left, motors_right,
                ibus_sm, ibus_buf, ibus_st,
-               lock, motor_sp, rc_channels, rc_ts,
+               lock, motor_sp, applied_sp, rc_channels, rc_ts,
                fn_poll, fn_decode, fn_angle_diff,
                bearing_kp, running_ref):
     """Continuously apply the latest motor speeds with optional bearing hold.
@@ -423,6 +432,8 @@ def motor_core(motors_left, motors_right,
     only at module load are not reliably accessible from Core 1 on this
     MicroPython build, so nothing is looked up via the global dict.
     motors_left / motors_right are lists of Motor objects (one per BigMotorModule).
+    applied_sp is a 2-element list [left, right] written back after correction so
+    Core 0 can report actual applied speeds via CMD_SENSOR.
     running_ref is a single-element list [True] so Core 1 can observe shutdown.
     """
     from utime import ticks_ms, ticks_diff, ticks_add
@@ -441,6 +452,11 @@ def motor_core(motors_left, motors_right,
                 correction = max(-bearing_kp, min(bearing_kp, bearing_kp * error / 180.0))
                 left  = max(-1.0, min(1.0, left  + correction))
                 right = max(-1.0, min(1.0, right - correction))
+
+            lock.acquire()
+            applied_sp[0] = left
+            applied_sp[1] = right
+            lock.release()
 
             for motor in motors_left:
                 motor.speed(left)
@@ -540,7 +556,7 @@ try:
     _thread.start_new_thread(motor_core, (
         motors_left, motors_right,
         _ibus_sm, _ibus_buf, _ibus_st,
-        _lock, _motor_sp, _rc_channels, _rc_ts,
+        _lock, _motor_sp, _applied_sp, _rc_channels, _rc_ts,
         _ibus_poll, _decode_ibus, _angle_diff,
         BEARING_KP, _running_ref,
     ))
@@ -738,6 +754,12 @@ try:
                             _send_data(RESP_PITCH,   255)
                             _send_data(RESP_ROLL,    255)
                         _send_data(RESP_FW_VERSION, FIRMWARE_VERSION)
+                        _lock.acquire()
+                        al = _applied_sp[0]
+                        ar = _applied_sp[1]
+                        _lock.release()
+                        _send_data(RESP_SPEED_L, _speed_encode(al))
+                        _send_data(RESP_SPEED_R, _speed_encode(ar))
 
                     elif cmd_code == CMD_BEARING:
                         if value == 255:

@@ -150,6 +150,9 @@ class Telemetry:
     fr_fault:   bool  = False
     fl_fault:   bool  = False
     rl_fault:   bool  = False
+    # Applied speeds after bearing correction (firmware v5+; 0.0 on older firmware)
+    applied_l:  float = 0.0   # -1.0..+1.0
+    applied_r:  float = 0.0
 
 
 @dataclass
@@ -298,7 +301,7 @@ class _YukonLink:
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
     CMD_BENCH    = 13  # value: 0=disable dual power switch output, 1=enable
 
-    RESP_IDS     = range(25)  # 0..24 sensor IDs (13-16=per-mod temps, 17-20=per-mod currents, 21-24=per-mod faults)
+    RESP_IDS     = range(27)  # 0..26 sensor IDs (25=applied left speed, 26=applied right speed — firmware v5+)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
     # Note: RESP_RC_BASE (8) overlaps RESP_PITCH (8) and RESP_ROLL (9) by ID number,
     # but they are never mixed in the same response batch. Routing is safe because
@@ -378,7 +381,7 @@ class _YukonLink:
                 if len(pkt) == 5:
                     in_pkt = False
                     rtype, v_high, v_low, chk = pkt[1], pkt[2], pkt[3], pkt[4]
-                    if (0x30 <= rtype <= 0x48 and
+                    if (0x30 <= rtype <= 0x4A and
                             0x40 <= v_high <= 0x4F and
                             0x50 <= v_low  <= 0x5F and
                             chk == (rtype ^ v_high ^ v_low)):
@@ -430,7 +433,10 @@ class _YukonLink:
         # Roll: encoded (roll+180)*254/360; 255 = absent
         rol_raw = raw.get(9, 255)
         roll    = None if rol_raw == 255 else round(rol_raw * 360.0 / 254.0 - 180.0, 1)
-        fw_raw = raw.get(12, 0)
+        fw_raw  = raw.get(12, 0)
+        # Applied speeds (firmware v5+): same encoding as CMD_LEFT/CMD_RIGHT (0-100 fwd, 101-200 rev)
+        def _dec_sp(v):
+            return v / 100.0 if v <= 100 else -((v - 100) / 100.0)
         return Telemetry(
             voltage          = raw.get(0, 0) / 10.0,
             current          = raw.get(1, 0) / 100.0,
@@ -458,6 +464,8 @@ class _YukonLink:
             fr_fault         = bool(raw.get(22, 0)),
             fl_fault         = bool(raw.get(23, 0)),
             rl_fault         = bool(raw.get(24, 0)),
+            applied_l        = _dec_sp(raw.get(25, 0)),
+            applied_r        = _dec_sp(raw.get(26, 0)),
         )
 
     # ── protocol helpers ─────────────────────────────────────────────────────
