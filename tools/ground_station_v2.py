@@ -165,6 +165,7 @@ class _GsState:
             "fl_temp": 0.0, "fr_temp": 0.0, "rl_temp": 0.0, "rr_temp": 0.0,
             "fl_current": 0.0, "fr_current": 0.0, "rl_current": 0.0, "rr_current": 0.0,
             "fl_fault": False, "fr_fault": False, "rl_fault": False, "rr_fault": False,
+            "applied_l": 0.0, "applied_r": 0.0,
         }
         self._gps = {
             "latitude": None, "longitude": None, "altitude": None,
