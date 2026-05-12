@@ -105,6 +105,7 @@ _Gps._run() ──► NMEA parse ──► GpsState(lat, lon, fix_quality, …)
              ──► optional CSV log via _gps_log_thread
 
 _System._run() ──► psutil CPU/mem/disk ──► SystemState
+               ──► optional INA237 I²C read (Pi supply voltage/current/power)
 ```
 
 ---
@@ -122,7 +123,7 @@ class RobotState:
     telemetry:      Telemetry       # voltage, current, temps, faults
     gps:            GpsState        # lat, lon, fix_quality, hdop, satellites, …
     lidar:          LidarScan       # angles[], distances[], timestamp
-    system:         SystemState     # CPU%, temp, mem, disk
+    system:         SystemState     # CPU%, temp, mem, disk, INA237 power monitor
     rc_active:      bool
     # Legacy single-camera flags (backward compat)
     camera_ok:      bool
@@ -145,6 +146,8 @@ class RobotState:
     data_logging:   bool
     no_motors:      bool            # drive commands suppressed (bench testing)
     speed_scale:    float           # current speed limit (0.0–1.0)
+    batt_warn_v:    float           # pack voltage warn threshold (from [battery] chemistry×cells)
+    batt_crit_v:    float           # pack voltage critical threshold
     nav_state:          str             # navigator state name (e.g. "SEARCHING", "PASSING")
     nav_gate:           int             # ArUco target gate index
     nav_wp:             int             # GPS target waypoint index
@@ -168,16 +171,23 @@ class RobotState:
 ```python
 @dataclass
 class SystemState:
-    cpu_percent:   float   # 0–100 %
-    cpu_temp_c:    float   # °C
-    cpu_freq_mhz:  float
-    mem_used_mb:   float
-    mem_total_mb:  float
-    mem_percent:   float
-    disk_used_gb:  float
-    disk_total_gb: float
-    disk_percent:  float
-    timestamp:     float
+    cpu_percent:      float   # 0–100 %
+    cpu_temp_c:       float   # °C
+    cpu_freq_mhz:     float
+    mem_used_mb:      float
+    mem_total_mb:     float
+    mem_percent:      float
+    disk_used_gb:     float
+    disk_total_gb:    float
+    disk_percent:     float
+    timestamp:        float
+    # INA237 power monitor (Pi 12 V supply input; all 0.0 / False when absent or disabled)
+    pi_ina_ok:        bool    # True when INA237 is connected and reading
+    pi_input_voltage: float   # V
+    pi_input_current: float   # A
+    pi_input_power:   float   # W
+    pi_ina_warn_v:    float   # yellow threshold (from [battery] chemistry×cells)
+    pi_ina_crit_v:    float   # red threshold
 ```
 
 ---

@@ -389,6 +389,47 @@ Tests covered:
 
 ---
 
+### test_bearing.py
+
+Bearing-hold and pivot test web UI.  Uses `_YukonLink` directly so the RC TX switch cannot override the test.  A background heartbeat keeps the Yukon in AUTO mode.
+
+Two test modes:
+- **Forward** — drives both motors at *power%* forward while the Yukon bearing-hold PID steers to maintain the target heading (PASSING state).
+- **Pivot** — turns in place using Pi-side differential steering (`l = fwd − steer`, `r = fwd + steer`); stops automatically within 3° of target (ALIGNING state).
+
+The motor panel header shows **actual** post-correction speeds reported by firmware v5 (`applied_l`/`applied_r`) alongside the estimated speeds.
+
+```
+python3 tools/test_bearing.py
+python3 tools/test_bearing.py --yukon-port /dev/ttyACM0
+python3 tools/test_bearing.py --port 5010
+```
+
+---
+
+### test_ina237.py
+
+Live terminal monitor for the Adafruit INA237 power monitor (product 6340) on I²C1.
+Displays voltage, current, power, and die temperature at a configurable sample rate.
+Prints min/max summary on Ctrl-C.
+
+```
+python3 tools/test_ina237.py
+python3 tools/test_ina237.py --addr 0x41 --max-current 3.0
+python3 tools/test_ina237.py --shunt 0.05 --rate 5
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--addr HEX` | `0x40` | I²C address |
+| `--max-current A` | `2.0` | Max expected current (sets shunt calibration) |
+| `--shunt Ω` | `0.1` | Shunt resistor value |
+| `--rate Hz` | `2.0` | Sample rate |
+
+Requires: `pip3 install adafruit-circuitpython-ina23x adafruit-blinka adafruit-circuitpython-busdevice`
+
+---
+
 ### test_hardware.py
 
 Interactive real-world hardware tests requiring physical robot hardware.

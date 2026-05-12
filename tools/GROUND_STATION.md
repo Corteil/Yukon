@@ -193,6 +193,22 @@ python3 tools/ground_station_v2.py --backend fake --fpv-device 0   # with webcam
 
 ---
 
+## Battery voltage thresholds
+
+The status bar colours the pack voltage reading red/yellow/green based on configurable thresholds derived from the `[battery]` section of `robot.ini` (chemistry × cells).  Pass overrides on the command line if the robot is running a different pack:
+
+```bash
+python3 tools/ground_station_v2.py --batt-warn-v 11.1 --batt-crit-v 10.5   # 3S LiPo tighter margins
+python3 tools/ground_station_v2.py --batt-warn-v 10.5 --batt-crit-v 9.9    # default (lipo 3S)
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--batt-warn-v V` | `10.5` | Yellow below this voltage (lipo 3S default) |
+| `--batt-crit-v V` | `9.9`  | Red below this voltage (lipo 3S default) |
+
+---
+
 ## FPV camera
 
 The FPV feed comes from a local USB capture card or webcam on the operator

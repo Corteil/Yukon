@@ -154,13 +154,14 @@ Each record contains a complete snapshot of all sensor inputs and motor outputs:
 | `ts` / `ts_iso` | Unix timestamp + ISO datetime string |
 | `mode`, `auto_type`, `speed_scale` | Robot operating state |
 | `rc_channels` | All 14 raw RC µs values |
-| `drive` | `left` / `right` motor outputs — the training labels |
+| `drive` | `left` / `right` commanded motor outputs — the training labels |
+| `telemetry.applied_l/r` | Actual post-correction motor speeds from firmware v5 (`0.0` on older firmware) |
 | `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags, firmware version, applied motor speeds (firmware v5+) |
 | `gps` | Lat, lon, alt, speed, fix quality, satellites, HDOP, h_error |
 | `lidar` | Full angle and distance arrays |
 | `aruco` | All detected tags and gates with bearings and distances |
 | `nav` | Navigator state, target gate/waypoint, bearing error |
-| `system` | CPU %, CPU temp, memory %, disk % |
+| `system` | CPU %, CPU temp, memory %, disk %; `pi_ina_ok`, `pi_v`, `pi_i`, `pi_p` when INA237 is connected |
 
 `robot.start()` retries the Yukon serial connection every 3 seconds if the port is
 not yet available — it will not raise an error or exit.
@@ -433,6 +434,23 @@ lidar.stop()
 
 Hardware: GPIO 15 (RX) ← LD06 Tx @ 230400 8N1 via `uart0-pi5` overlay.
 GPIO 12 (PWM) → LD06 PWM control @ 30 kHz, 40% duty ≈ 10 Hz scan rate.
+
+---
+
+#### drivers/ina237.py
+
+Thin wrapper around `adafruit-circuitpython-ina23x` for the Adafruit INA237 power monitor (product 6340) on I²C1 (GPIO 2/3).  Used by `_System` to monitor the 12 V input supply to the Pi's DC-DC converter.
+
+```python
+from drivers.ina237 import INA237
+ina = INA237(address=0x40, r_shunt=0.1, max_current=2.0)
+v, i, p = ina.read_all()   # voltage (V), current (A), power (W)
+t = ina.temperature        # die temperature °C
+```
+
+Requires: `pip3 install adafruit-circuitpython-ina23x adafruit-blinka adafruit-circuitpython-busdevice`
+
+Enable in `robot.ini` `[ina237]` section: `enabled = true`.  Voltage warn/critical thresholds are derived automatically from `[battery]` chemistry × cells.
 
 ---
 
