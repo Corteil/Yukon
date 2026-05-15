@@ -23,10 +23,10 @@ def main():
     )
     parser.add_argument("--addr",        type=lambda x: int(x, 0), default=0x40,
                         help="I2C address (default 0x40)")
-    parser.add_argument("--max-current", type=float, default=2.0,
-                        help="Max expected current A (default 2.0)")
-    parser.add_argument("--shunt",       type=float, default=0.1,
-                        help="Shunt resistor Ω (default 0.1)")
+    parser.add_argument("--max-current", type=float, default=10.0,
+                        help="Max expected current A (default 10.0)")
+    parser.add_argument("--shunt",       type=float, default=0.015,
+                        help="Shunt resistor Ω (default 0.015, Adafruit breakout)")
     parser.add_argument("--rate",        type=float, default=2.0,
                         help="Sample rate Hz (default 2)")
     args = parser.parse_args()
@@ -35,7 +35,7 @@ def main():
         from drivers.ina237 import INA237
     except ImportError as e:
         print(f"Import error: {e}")
-        print("Install: pip3 install adafruit-circuitpython-ina23x")
+        print("Install: pip3 install smbus2")
         sys.exit(1)
 
     print(f"Opening INA237 at 0x{args.addr:02X}  shunt={args.shunt} Ω  max={args.max_current} A")

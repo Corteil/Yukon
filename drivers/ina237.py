@@ -1,15 +1,17 @@
-"""INA237 power monitor — thin wrapper around adafruit-circuitpython-ina23x.
+"""INA237 power monitor — wrapper around adafruit-circuitpython-ina23x.
 
-Install dependency:
-    pip3 install adafruit-circuitpython-ina23x
+Install:
+    pip3 install --break-system-packages adafruit-blinka adafruit-circuitpython-ina23x
 
-Wiring (I2C1 on Pi 5):
+Wiring (I2C1 on Pi 5, enable via dtparam=i2c_arm=on in /boot/firmware/config.txt):
     VCC  → 3.3 V  (pin 1)
     GND  → GND    (pin 6)
     SDA  → GPIO 2 (pin 3)
     SCL  → GPIO 3 (pin 5)
-    VIN+ → supply +ve (before DC-DC converter)
+    VIN+ → supply +ve
     VIN- → supply −ve / GND
+
+Note: Adafruit INA237 breakout uses a 0.015 Ω shunt, 10 A max (library defaults).
 """
 
 from __future__ import annotations
@@ -20,12 +22,12 @@ class INA237:
 
     Args:
         address:     I2C address (default 0x40, A0+A1 unconnected)
-        r_shunt:     Shunt resistor in ohms (Adafruit breakout = 0.1 Ω)
-        max_current: Maximum expected current in amps (sets ADC resolution)
+        r_shunt:     Shunt resistor in ohms (Adafruit breakout = 0.015 Ω)
+        max_current: Maximum expected current in amps
     """
 
     def __init__(self, address: int = 0x40,
-                 r_shunt: float = 0.1, max_current: float = 2.0) -> None:
+                 r_shunt: float = 0.015, max_current: float = 10.0) -> None:
         import board
         import adafruit_ina23x
 
