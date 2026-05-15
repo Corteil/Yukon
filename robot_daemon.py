@@ -1779,6 +1779,7 @@ class _DataLogger:
                 'pi_v':      round(s.pi_input_voltage, 3) if s.pi_ina_ok else None,
                 'pi_i':      round(s.pi_input_current, 4) if s.pi_ina_ok else None,
                 'pi_p':      round(s.pi_input_power,   2) if s.pi_ina_ok else None,
+                'pi_t':      round(s.pi_ina_temp,      1) if s.pi_ina_ok else None,
             },
         }
 
