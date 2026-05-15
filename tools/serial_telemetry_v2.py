@@ -58,7 +58,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from robot.telemetry_proto import (
     FrameDecoder,
-    encode_state, encode_telem, encode_mod_telem, encode_gps, encode_sys, encode_nav,
+    encode_state, encode_telem, encode_mod_telem, encode_gps, encode_sys, encode_nav, encode_ina,
     encode_lidar, encode_alarm, encode_tags, encode_cmd, encode_rtcm,
     decode_cmd,
     state_flags, lidar_to_step_array,
@@ -401,6 +401,16 @@ class TelemetryBridgeV2:
                         mem  = s.mem_percent,
                         disk = s.disk_percent,
                         temp = s.cpu_temp_c,
+                    ))
+
+                # ── 1 Hz: INA237 ─────────────────────────────────────────
+                if tick % lidar_ticks == 0:
+                    self._send(encode_ina(
+                        voltage_v = state.pi_input_voltage,
+                        current_a = state.pi_input_current,
+                        power_w   = state.pi_input_power,
+                        die_temp  = state.pi_ina_temp,
+                        ok        = state.pi_ina_ok,
                     ))
 
                 # ── 1 Hz: LIDAR ───────────────────────────────────────────

@@ -645,7 +645,13 @@ function htmlSystem(i) {
         <span class="sys-val" id="q${i}-mem-val">--</span></div></div>
     <div class="sys-row"><label>Disk</label>
       <div class="sys-track"><div class="sys-fill" id="q${i}-disk-fill"></div>
-        <span class="sys-val" id="q${i}-disk-val">--</span></div></div>`;
+        <span class="sys-val" id="q${i}-disk-val">--</span></div></div>
+    <div class="sys-row" id="q${i}-ina-row" style="display:none;padding:3px 8px;border-top:1px solid var(--border);margin-top:4px">
+      <label>Input</label>
+      <span id="q${i}-ina-v"  style="font-size:13px;margin-left:4px">--</span>
+      <span id="q${i}-ina-i"  style="font-size:13px;margin-left:8px;color:var(--gray)">--</span>
+      <span id="q${i}-ina-p"  style="font-size:13px;margin-left:8px;color:var(--gray)">--</span>
+    </div>`;
 }
 function htmlLidar(i) {
   return `<canvas id="q${i}-lidar-canvas" class="lidar-canvas"></canvas>`;
@@ -1152,6 +1158,17 @@ function updateSystemPanel(i, s) {
   const te=el(`q${i}-temp`); if(te){te.textContent=`${sys.cpu_temp_c.toFixed(0)}°C`;
     te.style.color=sys.cpu_temp_c<60?C.green:sys.cpu_temp_c<75?C.yellow:C.red;}
   const fe=el(`q${i}-freq`); if(fe) fe.textContent=`${sys.cpu_freq_mhz.toFixed(0)} MHz`;
+  // INA237
+  const ina=s.ina; const inaRow=el(`q${i}-ina-row`);
+  if(inaRow) inaRow.style.display=ina&&ina.ok?'':'none';
+  if(ina&&ina.ok){
+    const iv=el(`q${i}-ina-v`); if(iv){
+      iv.textContent=`${ina.voltage.toFixed(2)} V`;
+      const wv=s.batt_warn_v||10.5, cv=s.batt_crit_v||9.9;
+      iv.style.color=ina.voltage>wv?C.green:ina.voltage>cv?C.yellow:C.red;}
+    const ii=el(`q${i}-ina-i`); if(ii) ii.textContent=`${ina.current.toFixed(2)} A`;
+    const ip=el(`q${i}-ina-p`); if(ip) ip.textContent=`${ina.power.toFixed(1)} W`;
+  }
 }
 
 function updateLidarPanel(i, s) {

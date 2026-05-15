@@ -28,6 +28,7 @@ Downlink packet types (robot → ground)
   0x07  ALARM   var   event  alarm_id, severity, message string
   0x08  TAGS    var   5 Hz   visible ArUco tags: id, cam, cx, cy, distance, bearing
   0x09  MOD_TELEM 9 B 5 Hz  per-module: fl/fr/rl/rr temp(°C), current(A×10), faults(bits)
+  0x0A  INA      8 B 1 Hz  INA237 input power: voltage(mV), current(mA), power(10mW), die_temp(°C), flags
 
 Uplink packet types (ground → robot)
 --------------------------------------
@@ -63,6 +64,7 @@ TYPE_LIDAR  = 0x06
 TYPE_ALARM  = 0x07
 TYPE_TAGS   = 0x08
 TYPE_MOD_TELEM = 0x09  # per-module telemetry (4 × BigMotorModule)
+TYPE_INA       = 0x0A  # INA237 input power monitor
 
 # Camera ID constants for TAGS packet
 CAM_FRONT_LEFT  = 0
@@ -435,6 +437,32 @@ def decode_mod_telem(payload: bytes) -> dict:
         "rl_current": fc_rl / 10.0, "rr_current": fc_rr / 10.0,
         "fl_fault": bool(faults & 1), "fr_fault": bool(faults & 2),
         "rl_fault": bool(faults & 4), "rr_fault": bool(faults & 8),
+    }
+
+
+# INA — 8 bytes
+# voltage:u16(mV)  current:u16(mA)  power:u16(10mW)  die_temp:i8(°C)  flags:u8(bit0=ok)
+_FMT_INA = struct.Struct('<HHHbB')
+
+def encode_ina(voltage_v: float, current_a: float, power_w: float,
+               die_temp: float, ok: bool) -> bytes:
+    v  = max(0, min(65534, int(round(voltage_v * 1000))))
+    i  = max(0, min(65534, int(round(current_a * 1000))))
+    p  = max(0, min(65534, int(round(power_w   * 100))))
+    t  = max(-128, min(127, int(round(die_temp))))
+    f  = 0x01 if ok else 0x00
+    return encode_frame(TYPE_INA, _FMT_INA.pack(v, i, p, t, f))
+
+
+def decode_ina(payload: bytes) -> dict:
+    v, i, p, t, f = _FMT_INA.unpack(payload[:_FMT_INA.size])
+    ok = bool(f & 0x01)
+    return {
+        "ok":       ok,
+        "voltage":  None if not ok else v / 1000.0,
+        "current":  None if not ok else i / 1000.0,
+        "power":    None if not ok else p / 100.0,
+        "die_temp": None if not ok else float(t),
     }
 
 

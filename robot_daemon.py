@@ -214,6 +214,7 @@ class SystemState:
     pi_input_voltage:   float = 0.0   # V
     pi_input_current:   float = 0.0   # A
     pi_input_power:     float = 0.0   # W
+    pi_ina_temp:        float = 0.0   # °C — INA237 die temperature
     pi_ina_ok:          bool  = False
     pi_ina_warn_v:      float = 11.8  # V — yellow below this
     pi_ina_crit_v:      float = 11.0  # V — red below this
@@ -1585,11 +1586,12 @@ class _System:
                 disk_pct   = 100.0 * du.used / du.total if du.total else 0.0
 
                 # INA237 power monitor
-                pi_v = pi_i = pi_p = 0.0
+                pi_v = pi_i = pi_p = pi_t = 0.0
                 pi_ina_ok = False
                 if ina is not None:
                     try:
                         pi_v, pi_i, pi_p = ina.read_all()
+                        pi_t = ina.temperature
                         pi_ina_ok = True
                     except Exception as e:
                         log.debug("INA237 read error: %s", e)
@@ -1611,6 +1613,7 @@ class _System:
                         pi_input_voltage = round(pi_v, 3),
                         pi_input_current = round(pi_i, 4),
                         pi_input_power   = round(pi_p, 2),
+                        pi_ina_temp      = round(pi_t, 1),
                         pi_ina_ok        = pi_ina_ok,
                         pi_ina_warn_v    = self._ina_warn_v,
                         pi_ina_crit_v    = self._ina_crit_v,

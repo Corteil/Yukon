@@ -65,10 +65,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from robot.telemetry_proto import (
         FrameDecoder,
-        TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_SYS, TYPE_NAV, TYPE_LIDAR, TYPE_ALARM, TYPE_TAGS,
+        TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_SYS, TYPE_NAV, TYPE_LIDAR, TYPE_ALARM, TYPE_TAGS, TYPE_INA,
         TYPE_MOD_TELEM,
         TYPE_CMD, TYPE_RTCM, TYPE_PING,
-        decode_state, decode_telem, decode_gps, decode_sys, decode_nav,
+        decode_state, decode_telem, decode_gps, decode_sys, decode_nav, decode_ina,
         decode_lidar, decode_alarm, decode_tags, decode_mod_telem,
         encode_cmd, encode_rtcm, encode_ping,
         CMD_ESTOP, CMD_RESET_ESTOP, CMD_SET_MODE,
@@ -79,7 +79,7 @@ try:
         MODE_MANUAL, MODE_AUTO,
         # fake generator encoders
         encode_state, encode_telem, encode_mod_telem, encode_gps, encode_sys, encode_nav,
-        encode_lidar, encode_alarm, encode_tags,
+        encode_lidar, encode_alarm, encode_tags, encode_ina,
         CAM_FRONT_LEFT, CAM_FRONT_RIGHT, CAM_REAR,
         state_flags,
         SF_RC_ACTIVE, SF_LIDAR_OK, SF_GPS_OK, SF_CAM_OK,
@@ -194,6 +194,7 @@ class _GsState:
             "nav_next_gate_label": "",
         }
         self._lidar = {"angles": [], "distances": []}
+        self._ina = {"ok": False, "voltage": None, "current": None, "power": None, "die_temp": None}
         # ArUco tags: per-camera dict → list of tag dicts  (matches s.aruco[camKey].tags)
         self._aruco = {
             "front_left":  {"tags": [], "tag_count": 0, "fps": 0.0, "cap_w": 0, "cap_h": 0, "gates": []},
@@ -252,6 +253,11 @@ class _GsState:
             s["cpu_temp_c"]   = d["temp"]
             s["mem_percent"]  = d["mem"]
             s["disk_percent"] = d["disk"]
+            self._touch()
+
+    def handle_ina(self, d: dict):
+        with self._lock:
+            self._ina.update(d)
             self._touch()
 
     def handle_nav(self, d: dict):
@@ -415,6 +421,8 @@ class _GsState:
                 "lidar": dict(self._lidar),
                 # System
                 "system": dict(self._sys),
+                # INA237 power monitor
+                "ina": dict(self._ina),
                 # Ground-station extras
                 "_link_age":     round(self.link_age(), 1),
                 "_link_packets": self.packets,
@@ -454,6 +462,7 @@ def _dispatch(ptype: int, payload: bytes):
         elif ptype == TYPE_LIDAR:     _gs.handle_lidar(decode_lidar(payload))
         elif ptype == TYPE_ALARM:     _gs.handle_alarm(decode_alarm(payload))
         elif ptype == TYPE_TAGS:      _gs.handle_tags(decode_tags(payload))
+        elif ptype == TYPE_INA:       _gs.handle_ina(decode_ina(payload))
         else:
             log.debug("Unknown downlink frame type 0x%02X (%d B)", ptype, len(payload))
     except Exception as e:
@@ -861,6 +870,13 @@ class FakeLinkV2(_LinkBase):
                     mem  = 42.0,
                     disk = 18.5,
                     temp = round(52 + math.sin(t * 0.07) * 5, 1),
+                ))
+                frames.append(encode_ina(
+                    voltage_v = round(12.1 + math.sin(t * 0.05) * 0.2, 3),
+                    current_a = round(1.2  + math.sin(t * 0.13) * 0.3, 3),
+                    power_w   = round(14.5 + math.sin(t * 0.09) * 3.0, 2),
+                    die_temp  = round(28.0 + math.sin(t * 0.04) * 2.0, 1),
+                    ok        = True,
                 ))
 
                 dists = []
