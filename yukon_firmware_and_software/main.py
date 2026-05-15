@@ -25,7 +25,7 @@ def _pio_uart_rx():
 # Hardware constants
 LED_A = 'A'
 LED_B = 'B'
-FIRMWARE_VERSION = 5   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
+FIRMWARE_VERSION = 6   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
 UPDATES      = 50
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
@@ -36,6 +36,12 @@ NUM_LEDS               = 8     # number of NeoPixels on the LED strip module
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
 # Tune upward if the robot drifts; tune downward if it oscillates.
 BEARING_KP = 0.4
+
+# Motor direction inversion — set True to compensate for physical wiring/mounting.
+# MOTOR_INVERT_FWD_REV: True swaps forward and reverse on both sides.
+# MOTOR_INVERT_LR:      True swaps left and right motor outputs.
+MOTOR_INVERT_FWD_REV = False
+MOTOR_INVERT_LR      = False
 
 # ── Serial protocol ───────────────────────────────────────────────────────────
 #
@@ -425,7 +431,8 @@ def motor_core(motors_left, motors_right,
                ibus_sm, ibus_buf, ibus_st,
                lock, motor_sp, applied_sp, rc_channels, rc_ts,
                fn_poll, fn_decode, fn_angle_diff,
-               bearing_kp, running_ref):
+               bearing_kp, running_ref,
+               invert_fwd_rev, invert_lr):
     """Continuously apply the latest motor speeds with optional bearing hold.
 
     Runs on core 1.  All required state is passed as arguments — globals assigned
@@ -458,10 +465,14 @@ def motor_core(motors_left, motors_right,
             applied_sp[1] = right
             lock.release()
 
+            hw_l = -left  if invert_fwd_rev else left
+            hw_r = -right if invert_fwd_rev else right
+            if invert_lr:
+                hw_l, hw_r = hw_r, hw_l
             for motor in motors_left:
-                motor.speed(left)
+                motor.speed(hw_l)
             for motor in motors_right:
-                motor.speed(-right)
+                motor.speed(-hw_r)
 
             t_end = ticks_add(ticks_ms(), 20)
             while ticks_diff(t_end, ticks_ms()) > 0:
@@ -559,6 +570,7 @@ try:
         _lock, _motor_sp, _applied_sp, _rc_channels, _rc_ts,
         _ibus_poll, _decode_ibus, _angle_diff,
         BEARING_KP, _running_ref,
+        MOTOR_INVERT_FWD_REV, MOTOR_INVERT_LR,
     ))
 
     # ── Core 0: IMU + serial comms + Yukon monitoring ─────────────────────────
