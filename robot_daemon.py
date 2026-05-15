@@ -3630,8 +3630,8 @@ def main():
         data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
         ina237_enabled        = _cfg(cfg, 'ina237', 'enabled',     False, bool),
         ina237_address        = _cfg(cfg, 'ina237', 'address',     0x40,  int),
-        ina237_r_shunt        = _cfg(cfg, 'ina237', 'r_shunt',     0.1,   float),
-        ina237_max_current    = _cfg(cfg, 'ina237', 'max_current', 2.0,   float),
+        ina237_r_shunt        = _cfg(cfg, 'ina237', 'r_shunt',     0.015, float),
+        ina237_max_current    = _cfg(cfg, 'ina237', 'max_current', 10.0,  float),
         ina237_warn_v         = _batt_warn,
         ina237_crit_v         = _batt_crit,
     )
