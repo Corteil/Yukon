@@ -217,7 +217,7 @@ Tests covered:
 
 | # | Test | What is checked |
 |---|------|-----------------|
-| 1 | Default state | Fresh `_GsState` has correct zero/False defaults |
+| 1 | Default state | Fresh `_GsState` has correct zero/False defaults; `ina` dict starts with `ok=False` and all values `None` |
 | 2 | `apply_cmd` mode | estop→ESTOP; reset in ESTOP→MANUAL; reset in MANUAL no-op; set_mode blocked in ESTOP |
 | 3 | `apply_cmd` flags | `no_motors_toggle`, `data_log_toggle`, `nav_pause_toggle` toggle pairs |
 | 4 | `apply_cmd` recording | `record_start` sets flag (idempotent); `record_stop` clears flag (idempotent); `record_toggle` flips both ways |
@@ -225,9 +225,10 @@ Tests covered:
 | 6 | `handle_telem` | Voltage, current, board_temp, heading round-trip |
 | 7 | `handle_gps` | Lat/lon, fix quality name, satellite count |
 | 8 | `handle_alarm` | Entry fields; ring buffer capped at `MAX_ALARMS` |
-| 9 | `_body_to_cmd_frame` | All 10 commands produce the correct CMD byte; unknown→None; set_mode encodes mode parameter |
-| 10 | `api_cmd` idempotency | `record_start` only queues `CMD_RECORD_TOGGLE` when not recording; `record_stop` only when recording |
-| 11 | Telemetry pipeline | `encode_state` / `encode_telem` / `encode_gps` → `FrameDecoder` → `handle_*` full roundtrip |
+| 9 | `handle_ina` | ok=True: V/A/W/die_temp round-trip; ok=False: all fields become None |
+| 10 | `_body_to_cmd_frame` | All 10 commands produce the correct CMD byte; unknown→None; set_mode encodes mode parameter |
+| 11 | `api_cmd` idempotency | `record_start` only queues `CMD_RECORD_TOGGLE` when not recording; `record_stop` only when recording |
+| 12 | Telemetry pipeline | `encode_state` / `encode_telem` / `encode_gps` / `encode_ina` → `FrameDecoder` → `handle_*` full roundtrip; ok=False path verified |
 
 ---
 
