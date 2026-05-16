@@ -406,11 +406,11 @@ class TelemetryBridgeV2:
                 # ── 1 Hz: INA237 ─────────────────────────────────────────
                 if tick % lidar_ticks == 0:
                     self._send(encode_ina(
-                        voltage_v = state.pi_input_voltage,
-                        current_a = state.pi_input_current,
-                        power_w   = state.pi_input_power,
-                        die_temp  = state.pi_ina_temp,
-                        ok        = state.pi_ina_ok,
+                        voltage_v = s.pi_input_voltage,
+                        current_a = s.pi_input_current,
+                        power_w   = s.pi_input_power,
+                        die_temp  = s.pi_ina_temp,
+                        ok        = s.pi_ina_ok,
                     ))
 
                 # ── 1 Hz: LIDAR ───────────────────────────────────────────
