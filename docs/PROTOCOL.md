@@ -235,6 +235,8 @@ SYNC = `0x48 0x52` (`HR`). CRC16 covers TYPE through end of PAYLOAD.
 | LIDAR  | 0x06 | 1 Hz | `u8` step + zlib-compressed `u16[]` distances (360/step values) |
 | ALARM  | 0x07 | event | Alarm name, severity, message |
 | TAGS   | 0x08 | 5 Hz | Array of 12-byte tag records: `<BBHHHhI>` — tag_id, cam_id, cx, cy, dist(mm), bearing(0.1°), area |
+| MOD_TELEM | 0x09 | 5 Hz | `<bbbbBBBBB>` (9 bytes) — fl/fr/rl/rr temp (°C, i8); fl/fr/rl/rr current (|A|×10, u8); faults u8 (bit0=FL, bit1=FR, bit2=RL, bit3=RR) |
+| INA    | 0x0A | 1 Hz | `<HHHbB>` (8 bytes) — voltage(mV u16), current(mA u16), power(10mW u16), die_temp(°C i8), flags u8 (bit0=ok). All values 0 / ok=0 when INA237 absent or disabled. |
 
 ## NAV packet (TYPE 0x05) — variable length
 
