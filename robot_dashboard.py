@@ -3067,6 +3067,18 @@ def main():
             return cli_val
         return _cfg(cfg, section, key, fallback, cast)
 
+    _BATT_CHEM = {
+        'lipo':  {'warn': 3.50, 'crit': 3.30},
+        'liion': {'warn': 3.40, 'crit': 3.20},
+        'nimh':  {'warn': 1.10, 'crit': 1.00},
+        'lfe':   {'warn': 3.00, 'crit': 2.80},
+    }
+    _batt_chem  = _cfg(cfg, 'battery', 'chemistry', 'lipo', str).lower()
+    _batt_cells = _cfg(cfg, 'battery', 'cells',     3,      int)
+    _batt_defs  = _BATT_CHEM.get(_batt_chem, _BATT_CHEM['lipo'])
+    _batt_warn  = _cfg(cfg, 'battery', 'voltage_warn',     _batt_defs['warn'] * _batt_cells, float)
+    _batt_crit  = _cfg(cfg, 'battery', 'voltage_critical', _batt_defs['crit'] * _batt_cells, float)
+
     _robot = Robot(
         yukon_port     = arg(args.yukon_port,     'robot', 'yukon_port',     None, port_val),
         ibus_port      = arg(args.ibus_port,       'robot', 'ibus_port',      '/dev/ttyAMA3'),
@@ -3114,6 +3126,12 @@ def main():
         rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),
         max_recording_minutes = _cfg(cfg, 'output', 'max_recording_minutes', 0.0, float),
         data_log_dir          = _cfg(cfg, 'output', 'data_log_dir',          ''),
+        ina237_enabled        = _cfg(cfg, 'ina237', 'enabled',     False, bool_val),
+        ina237_address        = _cfg(cfg, 'ina237', 'address',     0x40,  int),
+        ina237_r_shunt        = _cfg(cfg, 'ina237', 'r_shunt',     0.015, float),
+        ina237_max_current    = _cfg(cfg, 'ina237', 'max_current', 10.0,  float),
+        ina237_warn_v         = _batt_warn,
+        ina237_crit_v         = _batt_crit,
     )
     _robot.start()
     log.info(f'Dashboard → http://{_local_ip()}:{web_port}/')
