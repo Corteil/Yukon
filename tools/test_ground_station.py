@@ -37,8 +37,9 @@ from robot.telemetry_proto import (
     CMD_DATA_LOG_TOGGLE, CMD_NO_MOTORS_TOGGLE, CMD_GPS_BOOKMARK,
     CMD_NAV_RESET, CMD_NAV_PAUSE_TOGGLE, CMD_BENCH_TOGGLE,
     MODE_MANUAL, MODE_AUTO,
-    encode_state, encode_telem, encode_gps, encode_nav,
-    decode_state, decode_telem, decode_gps,
+    encode_state, encode_telem, encode_gps, encode_nav, encode_ina,
+    decode_state, decode_telem, decode_gps, decode_ina,
+    TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_INA,
     FrameDecoder,
 )
 
@@ -88,6 +89,12 @@ def test_defaults():
     _check("rc_active is False",      snap["rc_active"]     is False)
     _check("is_recording() False",    not s.is_recording())
     _check("packets starts at 0",     s.packets == 0)
+    ina = snap["ina"]
+    _check("ina.ok False by default",      ina["ok"]       is False)
+    _check("ina.voltage None by default",  ina["voltage"]  is None)
+    _check("ina.current None by default",  ina["current"]  is None)
+    _check("ina.power None by default",    ina["power"]    is None)
+    _check("ina.die_temp None by default", ina["die_temp"] is None)
 
 
 # ── apply_cmd: mode transitions ───────────────────────────────────────────────
@@ -242,6 +249,33 @@ def test_handle_alarm():
     _check("ring buffer capped",       len(s.get()["_alarms"]) == _GsState.MAX_ALARMS)
 
 
+# ── handle_ina ────────────────────────────────────────────────────────────────
+
+def test_handle_ina():
+    print("\nhandle_ina packet handler:")
+    s = _fresh()
+
+    # ok=True — all fields populated
+    s.handle_ina({"ok": True, "voltage": 12.15, "current": 1.32,
+                  "power": 6.25, "die_temp": 23.0})
+    ina = s.get()["ina"]
+    _check("ok True after good reading",        ina["ok"] is True)
+    _check("voltage round-trips",               abs(ina["voltage"]  - 12.15) < 0.01)
+    _check("current round-trips",               abs(ina["current"]  -  1.32) < 0.01)
+    _check("power round-trips",                 abs(ina["power"]    -  6.25) < 0.01)
+    _check("die_temp round-trips",              abs(ina["die_temp"] - 23.0)  < 0.5)
+
+    # ok=False — sensor absent; values become None
+    s.handle_ina({"ok": False, "voltage": None, "current": None,
+                  "power": None, "die_temp": None})
+    ina = s.get()["ina"]
+    _check("ok False after failed reading",     ina["ok"] is False)
+    _check("voltage None when not ok",          ina["voltage"]  is None)
+    _check("current None when not ok",          ina["current"]  is None)
+    _check("power None when not ok",            ina["power"]    is None)
+    _check("die_temp None when not ok",         ina["die_temp"] is None)
+
+
 # ── _body_to_cmd_frame ────────────────────────────────────────────────────────
 
 def test_cmd_frame():
@@ -327,11 +361,8 @@ def test_api_cmd_record():
 # ── Telemetry encode→decode pipeline ─────────────────────────────────────────
 
 def test_telemetry_pipeline():
-    """encode_state / encode_telem / encode_gps → FrameDecoder → handle_* roundtrip."""
+    """encode_state / encode_telem / encode_gps / encode_ina → FrameDecoder → handle_* roundtrip."""
     print("\nTelemetry encode→decode pipeline:")
-    from robot.telemetry_proto import (
-        TYPE_STATE, TYPE_TELEM, TYPE_GPS,
-    )
 
     s = _fresh()
     dec = FrameDecoder()
@@ -373,6 +404,29 @@ def test_telemetry_pipeline():
     _check("longitude -1.0 from pipeline", abs(g["longitude"] - (-1.0)) < 1e-3)
     _check("fix RTK Fixed from pipeline",  g["fix_quality_name"] == "RTK Fixed")
 
+    # INA237
+    ina_frame = encode_ina(12.18, 1.31, 6.24, 23, ok=True)
+    for ptype, payload in dec.feed(ina_frame):
+        if ptype == TYPE_INA:
+            s.handle_ina(decode_ina(payload))
+
+    ina = s.get()["ina"]
+    _check("ina ok from pipeline",              ina["ok"] is True)
+    _check("ina voltage 12.18 from pipeline",   abs(ina["voltage"]  - 12.18) < 0.01)
+    _check("ina current 1.31 from pipeline",    abs(ina["current"]  -  1.31) < 0.01)
+    _check("ina power 6.24 from pipeline",      abs(ina["power"]    -  6.24) < 0.05)
+    _check("ina die_temp 23 from pipeline",     abs(ina["die_temp"] - 23.0)  < 0.5)
+
+    # INA ok=False — values become None after decode
+    ina_off_frame = encode_ina(0.0, 0.0, 0.0, 0, ok=False)
+    for ptype, payload in dec.feed(ina_off_frame):
+        if ptype == TYPE_INA:
+            s.handle_ina(decode_ina(payload))
+
+    ina = s.get()["ina"]
+    _check("ina ok=False from pipeline",        ina["ok"] is False)
+    _check("ina voltage None when ok=False",    ina["voltage"] is None)
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -389,6 +443,7 @@ def main():
     test_handle_telem()
     test_handle_gps()
     test_handle_alarm()
+    test_handle_ina()
     test_cmd_frame()
     test_api_cmd_record()
     test_telemetry_pipeline()
