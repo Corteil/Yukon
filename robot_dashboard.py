@@ -546,6 +546,7 @@ button:active{background:#2a2a42}
   <span id="sb-mode">--</span>
   <div id="sb-info">
     <span class="sb-badge" id="sb-volt">--V</span>
+    <span class="sb-badge" id="sb-pi-v" style="display:none">Pi --V</span>
     <span class="sb-badge" id="sb-rc">RC --</span>
     <span class="sb-badge" id="sb-rec" style="display:none;color:var(--red);animation:blink 1s step-end infinite">⏺ REC</span>
     <span class="sb-badge" id="sb-dlog" style="display:none;color:var(--purple)">⬤ DLOG</span>
@@ -2076,6 +2077,16 @@ function updateStatusBar(s) {
   const volt=s.telemetry.voltage;
   const vc=volt!=null ? (volt<s.batt_crit_v?C.red:volt<s.batt_warn_v?C.yellow:C.green) : C.gray;
   const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
+
+  const sys=s.system;
+  const pve=el('sb-pi-v');
+  if(pve){
+    pve.style.display = sys.pi_ina_ok ? 'inline' : 'none';
+    if(sys.pi_ina_ok){
+      pve.textContent=`Pi ${sys.pi_input_voltage.toFixed(2)} V`;
+      pve.style.color=sys.pi_input_voltage>sys.pi_ina_warn_v?C.green:sys.pi_input_voltage>sys.pi_ina_crit_v?C.yellow:C.red;
+    }
+  }
 
   const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
   re.style.color=s.rc_active?C.green:C.gray;
