@@ -161,7 +161,7 @@ Each record contains a complete snapshot of all sensor inputs and motor outputs:
 | `lidar` | Full angle and distance arrays |
 | `aruco` | All detected tags and gates with bearings and distances |
 | `nav` | Navigator state, target gate/waypoint, bearing error |
-| `system` | CPU %, CPU temp, memory %, disk %; `pi_ina_ok`, `pi_v`, `pi_i`, `pi_p` when INA237 is connected |
+| `system` | CPU %, CPU temp, memory %, disk %; `pi_ina_ok`, `pi_v`, `pi_i`, `pi_p`, `pi_t` (die °C) when INA237 is connected |
 
 `robot.start()` retries the Yukon serial connection every 3 seconds if the port is
 not yet available — it will not raise an error or exit.
@@ -443,10 +443,12 @@ Thin wrapper around `adafruit-circuitpython-ina23x` for the Adafruit INA237 powe
 
 ```python
 from drivers.ina237 import INA237
-ina = INA237(address=0x40, r_shunt=0.1, max_current=2.0)
+ina = INA237(address=0x40, r_shunt=0.015, max_current=10.0)
 v, i, p = ina.read_all()   # voltage (V), current (A), power (W)
 t = ina.temperature        # die temperature °C
 ```
+
+Defaults match the Adafruit INA237 breakout (product 6340): 15 mΩ shunt, 10 A max current.
 
 Requires: `pip3 install adafruit-circuitpython-ina23x adafruit-blinka adafruit-circuitpython-busdevice`
 

@@ -186,6 +186,7 @@ class SystemState:
     pi_input_voltage: float   # V
     pi_input_current: float   # A
     pi_input_power:   float   # W
+    pi_ina_temp:      float   # INA237 die temperature °C
     pi_ina_warn_v:    float   # yellow threshold (from [battery] chemistry×cells)
     pi_ina_crit_v:    float   # red threshold
 ```

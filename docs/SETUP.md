@@ -17,6 +17,7 @@
 | Camera FR     | IMX296 global shutter, CSI CAM1 (`/base/.../i2c@88000`) via Picamera2 |
 | Camera Rear   | IMX477 HQ camera via USB/UVC adapter → `/dev/camera_rear` (OpenCV) |
 | LiDAR         | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 12 |
+| INA237        | Adafruit INA237 breakout (product 6340) on I²C1 (GPIO 2 SDA / GPIO 3 SCL); 15 mΩ shunt, 10 A max; monitors 12 V input to Pi DC-DC converter |
 
 ---
 
@@ -123,6 +124,9 @@ dtoverlay=uart0-pi5
 
 # Hardware PWM on GPIO 12 for LD06 spin motor
 dtoverlay=pwm,pin=12,func=4
+
+# I²C bus 1 (GPIO 2 SDA / GPIO 3 SCL) for INA237 power monitor and BNO085 IMU
+dtparam=i2c_arm=on
 
 # I2S audio
 # dtoverlay=hifiberry-dac        # uncomment and replace with your audio overlay
@@ -242,6 +246,46 @@ pip install -r requirements.txt
 | `flask` | `robot_dashboard.py`, `camera_web.py` |
 | `pillow` | `tools/generate_aruco_tags.py`, `tools/make_checkerboard_pdf.py` |
 | `psutil` | System stats (CPU, memory, disk) |
+| `adafruit-circuitpython-ina23x` | INA237 power monitor driver (`drivers/ina237.py`) |
+| `adafruit-blinka` | CircuitPython hardware abstraction layer (required by adafruit sensor drivers) |
+| `adafruit-circuitpython-busdevice` | I²C/SPI device helper (required by adafruit sensor drivers) |
+| `smbus2` | Direct I²C access (`tools/i2c_scan.py`) |
+
+---
+
+## INA237 power monitor wiring
+
+The Adafruit INA237 breakout (product 6340) monitors the 12 V supply that feeds the Pi's DC-DC converter.
+
+| INA237 pin | Connects to |
+|-----------|-------------|
+| VCC | 3.3 V (Pi pin 1) |
+| GND | GND (Pi pin 6) |
+| SDA | GPIO 2 / Pi pin 3 (I²C1 SDA) |
+| SCL | GPIO 3 / Pi pin 5 (I²C1 SCL) |
+| VIN+ | 12 V supply positive (before DC-DC converter) |
+| VIN− | DC-DC converter positive input |
+
+The 15 mΩ shunt resistor is on the breakout between VIN+ and VIN−.  Leave the A0/A1 address pins unconnected for the default I²C address of `0x40`.
+
+Verify the sensor is visible before enabling it:
+
+```bash
+python3 tools/i2c_scan.py
+# Expected output: Found devices at: 0x40
+```
+
+Enable in `robot.ini`:
+
+```ini
+[ina237]
+enabled     = true
+address     = 0x40
+r_shunt     = 0.015
+max_current = 10.0
+```
+
+Voltage warn/critical thresholds are derived automatically from the `[battery]` chemistry and cell count — no manual threshold configuration is needed.
 
 ---
 

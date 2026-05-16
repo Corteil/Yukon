@@ -407,6 +407,21 @@ python3 tools/test_bearing.py --port 5010
 
 ---
 
+### i2c_scan.py
+
+Scans I²C bus 1 (GPIO 2 SDA / GPIO 3 SCL) and prints all responding addresses.
+Useful for verifying the INA237 or BNO085 is wired and visible before enabling it in `robot.ini`.
+
+```
+python3 tools/i2c_scan.py
+```
+
+Prints a list of found addresses (e.g. `0x40`) or a clear error if the I²C bus is not enabled.  Enable the bus with `dtparam=i2c_arm=on` in `/boot/firmware/config.txt` and reboot if needed.
+
+Requires: `pip3 install smbus2`
+
+---
+
 ### test_ina237.py
 
 Live terminal monitor for the Adafruit INA237 power monitor (product 6340) on I²C1.
@@ -422,8 +437,8 @@ python3 tools/test_ina237.py --shunt 0.05 --rate 5
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr HEX` | `0x40` | I²C address |
-| `--max-current A` | `2.0` | Max expected current (sets shunt calibration) |
-| `--shunt Ω` | `0.1` | Shunt resistor value |
+| `--max-current A` | `10.0` | Max expected current (sets shunt calibration) |
+| `--shunt Ω` | `0.015` | Shunt resistor value (Adafruit breakout = 15 mΩ) |
 | `--rate Hz` | `2.0` | Sample rate |
 
 Requires: `pip3 install adafruit-circuitpython-ina23x adafruit-blinka adafruit-circuitpython-busdevice`
