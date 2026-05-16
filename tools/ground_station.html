@@ -223,6 +223,7 @@ button:active{background:#2a2a42}
   <span id="sb-mode">--</span>
   <div id="sb-info">
     <span class="sb-badge" id="sb-volt">--V</span>
+    <span class="sb-badge" id="sb-pi-v" style="display:none">Pi --V</span>
     <span class="sb-badge" id="sb-rc">RC --</span>
     <span class="sb-badge" id="sb-imu" style="color:var(--gray)">IMU --</span>
     <span class="sb-badge" id="sb-lidar" style="color:var(--gray)">LDR --</span>
@@ -1749,6 +1750,16 @@ function updateStatusBar(s) {
   const volt=s.telemetry.voltage;
   const vc=volt!=null ? (volt<s.batt_crit_v?C.red:volt<s.batt_warn_v?C.yellow:C.green) : C.gray;
   const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
+
+  const ina=s.ina||{};
+  const pve=el('sb-pi-v');
+  if(pve){
+    pve.style.display=ina.ok?'inline':'none';
+    if(ina.ok){
+      pve.textContent=`Pi ${ina.voltage.toFixed(2)} V`;
+      pve.style.color=ina.voltage>s.batt_warn_v?C.green:ina.voltage>s.batt_crit_v?C.yellow:C.red;
+    }
+  }
 
   const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
   re.style.color=s.rc_active?C.green:C.gray;
